@@ -1,5 +1,7 @@
 # AI 桌宠
 
+[![构建与测试](https://github.com/rf-liu/AI-ZhuoChong/actions/workflows/ci.yml/badge.svg)](https://github.com/rf-liu/AI-ZhuoChong/actions/workflows/ci.yml)
+
 让四只小伙伴陪着你写代码、看额度、等回复。一个原生 macOS 应用，分别跟随 Codex、Antigravity、Claude 和 DeepSeek Harness。
 
 <p>
