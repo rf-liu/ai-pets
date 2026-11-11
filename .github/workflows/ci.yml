@@ -1,0 +1,26 @@
+name: Check macOS build
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Node local-data tests
+        run: npm test --prefix gpt-niang-usage
+      - name: Window-follow policy
+        run: bash script/test_window_follow.sh
+      - name: Swift tests
+        run: swift test --package-path macos
+      - name: Build application
+        run: bash script/build_unified.sh
+      - name: Verify signature
+        run: codesign --verify --deep --strict dist/GPTNiangMac.app

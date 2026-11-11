@@ -1,0 +1,15 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {outputCounter,updateRate,fields} from '../runtime/gemini-token-counts.mjs';
+const v=value=>{let n=BigInt(value),bytes=[];do{const b=Number(n&127n);n>>=7n;bytes.push(b|(n?128:0));}while(n);return Buffer.from(bytes);};
+const integer=(key,value)=>Buffer.concat([v(key*8),v(value)]);
+const bytes=(key,value)=>Buffer.concat([v(key*8+2),v(value.length),value]);
+const record=usage=>bytes(1,bytes(4,usage));
+test('validated real usage layout includes response+thinking output without double counting',()=>{assert.equal(outputCounter(record(Buffer.concat([integer(3,120),integer(9,90),integer(10,30)]))),120);});
+test('unknown fields are skipped without interpreting strings as token counts',()=>{assert.equal(outputCounter(record(Buffer.concat([bytes(77,Buffer.from('private text')),integer(3,42)]))),42);});
+test('inconsistent total/subtotals are rejected rather than shown as measured speed',()=>assert.throws(()=>outputCounter(record(Buffer.concat([integer(3,99),integer(9,90),integer(10,30)])))));
+test('truncated protobuf is unavailable',()=>assert.throws(()=>fields(Buffer.from([10,127,1]))));
+test('first observation and unchanged data do not manufacture a speed',()=>{const cache={};assert.equal(updateRate(cache,[[1,20]],1000),null);assert.equal(updateRate(cache,[[1,20]],2000),null);});
+test('mutable same-row counters measure only the new output over real elapsed time',()=>{const c={};updateRate(c,[[1,20]],1000);const s=updateRate(c,[[1,50]],4000);assert.equal(s.outputTokens,30);assert.equal(s.intervalSeconds,3);assert.equal(s.tokensPerSecond,10);});
+test('new generation and repeated observations are deduplicated',()=>{const c={};updateRate(c,[[1,20]],1000);const s=updateRate(c,[[1,20],[2,15]],4000);assert.equal(s.tokensPerSecond,5);assert.deepEqual(updateRate(c,[[1,20],[2,15]],5000),s);});
+test('counter reset clears an earlier speed sample',()=>{const c={};updateRate(c,[[1,20]],1000);updateRate(c,[[1,50]],4000);assert.equal(updateRate(c,[[1,10]],5000),null);assert.equal(c.sample,null);});

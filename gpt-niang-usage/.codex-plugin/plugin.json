@@ -1,0 +1,6 @@
+{
+  "name": "ai-quota-pets-backend",
+  "version": "1.3.6",
+  "description": "AI 桌宠的本机额度与对话指标后台；保留兼容协议版本。",
+  "license": "MIT"
+}

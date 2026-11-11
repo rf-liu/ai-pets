@@ -1,0 +1,14 @@
+{
+  "name": "gpt-niang-usage",
+  "version": "1.3.6",
+  "private": true,
+  "type": "module",
+  "description": "Local quota and conversation metrics backend for AI Quota Pets",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
