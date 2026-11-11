@@ -8,7 +8,7 @@
 
 ```sh
 bash script/build_unified.sh
-codesign --verify --deep --strict dist/GPTNiangMac.app
+bash script/verify_app.sh
 ```
 
 `script/toolchain.sh` 优先保留显式 `GPT_NIANG_SDK`。在 CLT 环境中存在兼容的 26.5 SDK 时使用它，否则使用 `xcrun` 返回的 SDK。Full Xcode 使用它选中的 SDK。CLT 若无法加载新 SDK 的 SwiftUI 宏插件，可显式指定兼容 SDK 或使用 Full Xcode。
@@ -16,6 +16,8 @@ codesign --verify --deep --strict dist/GPTNiangMac.app
 ```sh
 GPT_NIANG_SDK=/path/to/MacOSX.sdk bash script/build_unified.sh
 ```
+
+主应用与登录助手均固定最低 macOS 13.0，并要求二者包含相同架构。`verify_app.sh` 核对最低系统版本、架构、签名及更新器排除，`package_release.sh` 构建后执行同一检查再生成 ZIP 与校验值。
 
 应用版本来自根目录 `VERSION`；Node 后台单独保留协议版本 `1.3.6`，用于工作进程兼容交接，不等同于应用版本。
 

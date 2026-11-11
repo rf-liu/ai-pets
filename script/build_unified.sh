@@ -8,7 +8,19 @@ export GPT_NIANG_BUILD_CONFIGURATION=release
 TASK_APP="$TASK_ROOT/dist/GPTNiangMac.app"
 TASK_HELPER="$TASK_APP/Contents/Library/LoginItems/AICompanionLauncher.app"
 mkdir -p "$TASK_HELPER/Contents/MacOS"
-/usr/bin/swiftc -O -sdk "$GPT_NIANG_SDK" -module-cache-path "$TASK_ROOT/macos/.build-cache/clang" -parse-as-library "$TASK_ROOT/script/UnifiedLoginHelper.swift" -o "$TASK_HELPER/Contents/MacOS/AICompanionLauncher"
+TASK_HELPER_BUILD="$(mktemp -d "${TMPDIR:-/tmp}/ai-pets-helper.XXXXXX")"
+trap 'rm -rf "$TASK_HELPER_BUILD"' EXIT
+TASK_HELPER_SLICES=()
+for TASK_ARCH in $(/usr/bin/lipo -archs "$TASK_APP/Contents/MacOS/GPTNiangMac"); do
+  TASK_SLICE="$TASK_HELPER_BUILD/AICompanionLauncher-$TASK_ARCH"
+  /usr/bin/swiftc -O -sdk "$GPT_NIANG_SDK" -target "$TASK_ARCH-apple-macosx13.0" -module-cache-path "$TASK_ROOT/macos/.build-cache/clang" -parse-as-library "$TASK_ROOT/script/UnifiedLoginHelper.swift" -o "$TASK_SLICE"
+  TASK_HELPER_SLICES+=("$TASK_SLICE")
+done
+if [ "${#TASK_HELPER_SLICES[@]}" -eq 1 ]; then
+  cp "${TASK_HELPER_SLICES[0]}" "$TASK_HELPER/Contents/MacOS/AICompanionLauncher"
+else
+  /usr/bin/lipo -create "${TASK_HELPER_SLICES[@]}" -output "$TASK_HELPER/Contents/MacOS/AICompanionLauncher"
+fi
 TASK_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$TASK_APP/Contents/Info.plist")"
 cat > "$TASK_HELPER/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict>

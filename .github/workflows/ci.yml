@@ -22,5 +22,5 @@ jobs:
         run: swift test --package-path macos
       - name: Build application
         run: bash script/build_unified.sh
-      - name: Verify signature
-        run: codesign --verify --deep --strict dist/GPTNiangMac.app
+      - name: Verify release compatibility
+        run: bash script/verify_app.sh
