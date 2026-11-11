@@ -11,7 +11,7 @@ bash script/build_unified.sh
 codesign --verify --deep --strict dist/GPTNiangMac.app
 ```
 
-`script/toolchain.sh` 优先保留显式 `GPT_NIANG_SDK`。在 CLT 环境中存在兼容的 26.5 SDK 时使用它，否则使用 `xcrun` 返回的 SDK。Full Xcode 使用它选中的 SDK。CLT 若无法加载新 SDK 的 SwiftUI 宏插件，可显式指定兼容 SDK 或使用 Full Xcode，不要切换到系统 Chrome 等无关工具。
+`script/toolchain.sh` 优先保留显式 `GPT_NIANG_SDK`。在 CLT 环境中存在兼容的 26.5 SDK 时使用它，否则使用 `xcrun` 返回的 SDK。Full Xcode 使用它选中的 SDK。CLT 若无法加载新 SDK 的 SwiftUI 宏插件，可显式指定兼容 SDK 或使用 Full Xcode。
 
 ```sh
 GPT_NIANG_SDK=/path/to/MacOSX.sdk bash script/build_unified.sh
