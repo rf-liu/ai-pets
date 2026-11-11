@@ -14,4 +14,4 @@ Intel、多显示器、所有宿主版本并未因以上检查而实机验证。
 
 ## GitHub Actions
 
-[最终 CI 43065485707](https://github.com/rf-liu/AI-ZhuoChong/actions/runs/43065485707) 已通过，源码提交 `8665b1cbf8d00986f118441d6ccfa6e4f3980982`：184 项 Node 测试通过，105 项 XCTest 测试通过，窗口跟随策略、release 构建以及签名/最低系统/架构检查全部成功。这里的 XCTest 是 GitHub runner 的 Xcode 执行结果，与上面的本机 CLT 独立断言明确区分。
+[最终 CI 43065485707](https://github.com/rf-liu/ai-pets/actions/runs/43065485707) 已通过，源码提交 `8665b1cbf8d00986f118441d6ccfa6e4f3980982`：184 项 Node 测试通过，105 项 XCTest 测试通过，窗口跟随策略、release 构建以及签名/最低系统/架构检查全部成功。这里的 XCTest 是 GitHub runner 的 Xcode 执行结果，与上面的本机 CLT 独立断言明确区分。
