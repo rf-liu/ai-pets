@@ -59,13 +59,13 @@ test('Claude and DS keep latest card metrics independent of their three-day mode
   }
 });
 test('Gemini keeps one generation on its card, excludes unknown timestamps, and expires cached history',()=>{
-  const gen=(tokens,at,model)=>({chatModel:{usage:{outputTokens:tokens},timeToFirstToken:'2s',streamingDuration:'3s',modelDisplayName:model,chatStartMetadata:{createdAt:new Date(at-5000).toISOString()}}});
+  const gen=(tokens,index,model)=>({stepIndices:[index],chatModel:{usage:{outputTokens:tokens},timeToFirstToken:'2s',streamingDuration:'3s',modelDisplayName:model,chatStartMetadata:{startStepIndex:index}}});
   const history=new RecentSpeedSamples();
-  const raw={generatorMetadata:[gen(100,now-WINDOW-1,'old'),gen(200,now-10000,'flash'),gen(300,now,'pro')]};
-  const result=latestGeneration(raw,{history,now});
+  const raw={generatorMetadata:[gen(100,0,'old'),gen(200,1,'flash'),gen(300,2,'pro')]};
+  const result=latestGeneration(raw,{history,now,stepTimes:new Map([[0,now-WINDOW-1],[1,now-10000],[2,now]])});
   assert.equal(result.outputTokens,300);assert.equal(result.intervalSeconds,5);assert.equal(result.tokensPerSecond,60);
   assert.deepEqual(result.recentSamples.map(x=>x.modelName),['flash','pro']);
   assert.deepEqual(history.snapshot(now+WINDOW+1).recentSamples,[]);
-  const noTime=gen(100,now,'x');delete noTime.chatModel.chatStartMetadata;
+  const noTime=gen(100,3,'x');
   assert.deepEqual(latestGeneration({generatorMetadata:[noTime]},{now}).recentSamples,[]);
 });

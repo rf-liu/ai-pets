@@ -1,5 +1,5 @@
 import {callRPC} from './gemini-usage.mjs';
-import {latestGenerationIndex} from './gemini-generation-index.mjs';
+import {latestGenerationIndex,generationStepTimes} from './gemini-generation-index.mjs';
 import {RecentSpeedSamples,RECENT_WINDOW_MS} from './recent-speed.mjs';
 
 export function durationSeconds(value){
@@ -21,7 +21,7 @@ function counter(value){
   return Number.isSafeInteger(number)&&number>=0?number:null;
 }
 
-export function generationSample(record){
+export function generationSample(record,{stepTimes=new Map()}={}){
   const chat=record?.chatModel,usage=chat?.usage;
   if(!usage)return null;
   const total=counter(usage.outputTokens),response=counter(usage.responseOutputTokens),thinking=counter(usage.thinkingOutputTokens);
@@ -32,20 +32,24 @@ export function generationSample(record){
   if(output===null||first===null||stream===null||first+stream<=0)return null;
   const seconds=first+stream,rate=output/seconds;
   if(!Number.isFinite(rate))return null;
-  const createdAt=Date.parse(chat.chatStartMetadata?.createdAt??'');
+  let sampleAt=null;
+  for(const index of Array.isArray(record.stepIndices)?record.stepIndices:[]){
+    const value=stepTimes.get(index);
+    if(Number.isFinite(value)&&(sampleAt===null||value>sampleAt))sampleAt=value;
+  }
   return {tokensPerSecond:rate,outputTokens:output,intervalSeconds:seconds,
     timeToFirstTokenSeconds:first,streamingSeconds:stream,
     responseOutputTokens:response,thinkingOutputTokens:thinking,
     modelName:String(chat.modelDisplayName||chat.responseModel||usage.model||'').slice(0,100),
-    measurement:'generation-average',sampleAt:Number.isFinite(createdAt)?createdAt+seconds*1000:null};
+    measurement:'generation-average',sampleAt,timeSource:sampleAt===null?null:'step-finished-generating-at'};
 }
 
-export function latestGeneration(raw,{history=new RecentSpeedSamples(),now=Date.now(),offset=0}={}){
+export function latestGeneration(raw,{history=new RecentSpeedSamples(),now=Date.now(),offset=0,stepTimes=new Map()}={}){
   const records=(raw?.response??raw)?.generatorMetadata;
   if(!Array.isArray(records))throw new Error('Missing generation metadata');
   let latest=null,oldest=Infinity;
   for(let i=0;i<records.length;i++){
-    const sample=generationSample(records[i]);
+    const sample=generationSample(records[i],{stepTimes});
     if(!sample)continue;
     latest=sample;
     if(Number.isFinite(sample.sampleAt))oldest=Math.min(oldest,sample.sampleAt);
@@ -55,11 +59,14 @@ export function latestGeneration(raw,{history=new RecentSpeedSamples(),now=Date.
   return latest?{...latest,...history.snapshot(now)}:null;
 }
 
-export async function readGenerationSpeed(id,{rpc=callRPC,index=latestGenerationIndex,history=new RecentSpeedSamples(),now=Date.now()}={}){
+export async function readGenerationSpeed(id,{rpc=callRPC,index=latestGenerationIndex,readTimes=generationStepTimes,history=new RecentSpeedSamples(),now=Date.now()}={}){
   if(!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))throw new Error('invalid session id');
   let offset=0;
   // Metadata only: bounded history for smoothing, never conversation messages.
   try{const value=await index(id);if(Number.isSafeInteger(value)&&value>=0)offset=Math.max(0,value-255);}catch{}
   const raw=await rpc('GetCascadeTrajectoryGeneratorMetadata',{cascadeId:id,generatorMetadataOffset:offset,includeMessages:false});
-  return latestGeneration(raw,{history,now,offset});
+  const records=(raw?.response??raw)?.generatorMetadata;
+  let stepTimes=new Map();
+  try{stepTimes=await readTimes(id,Array.isArray(records)?records.flatMap(record=>record.stepIndices??[]):[]);}catch{}
+  return latestGeneration(raw,{history,now,offset,stepTimes});
 }

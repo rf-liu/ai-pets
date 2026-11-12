@@ -54,3 +54,9 @@ Node 测试使用本地临时目录、固定记录和 mock 服务，不需要真
 ## 本机发布验证
 
 见 [VALIDATION.md](VALIDATION.md)。CI、Intel、其他宿主版本与多显示器不因本机一次构建而视为验证通过。
+
+## Gemini 时间关联
+
+Antigravity 2.29.0 的实际生成元数据含 `stepIndices`，`chatStartMetadata` 中没有可依赖的 `createdAt`。本版经本机 language_server 的 CortexStepMetadata 描述符核对，`finished_generating_at` 是字段 7，类型为 google.protobuf.Timestamp。生成记录与步骤索引关联后只解码这个时间字段；不用 created_at（字段 1）或 completed_at（字段 8）代替，以免混入工具等待或错误归期。
+
+步骤查询仅涉及 `steps.idx` 与有大小限制的 `steps.metadata`，不查询 `step_payload`，不输出元数据原文；时间读取失败时单轮 TPS 仍可显示，但不把无时间样本计入三天平均。
