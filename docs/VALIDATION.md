@@ -9,7 +9,7 @@
 - 对同一批本机真实返回进行修复前后对照，近期统计恢复非空、单轮指标完全一致。另经实际 gemini-thread-speed 输出管线确认，未仅依赖手工构造的界面样本。实际会话名、记录和速度没有纳入公开仓库。
 - release 构建、签名、macOS 13.0 最低版本、架构和 ZIP 检查通过。
 
-GitHub Actions 与安装验证完成后补充结果。
+[GitHub Actions 43228833290](https://github.com/rf-liu/ai-pets/actions/runs/43228833290) 已通过：203 项 Node 测试、108 项 XCTest、构建与发布兼容性检查全部成功，源码提交 `5fdafde4af4bae70d18f158aafd8b143873ca52d`。本机已运行 0.2.1，四套偏好、语录和音效逐项核对保留，安装的后台代码与已验证源码一致。
 
 ## 0.2.0
 
