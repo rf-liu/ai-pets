@@ -274,3 +274,24 @@ test('checkpoint capacity stays at 4096 and an evicted session can still deliver
   assert.equal(after.filter(e=>e.turnId==='new').length,1);assert.ok(replayed<=1);
   t.diagnostic(`A checkpoint evicted by the 4096-session limit replayed ${replayed} historical completion(s) in this fixture.`);
 }));
+
+test('sleeping at startup does not baseline away a completion written before the first active poll',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'pet-delayed-monitor-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const stamp=Date.now()-1000,found=[];let active=false,scans=0;
+  const monitor=new CompletionMonitor({codexHome:root,since:stamp,hostCheck:async()=>active,onNotification:e=>found.push(e),
+    pollerOptions:{schedule:()=>1,cancel:()=>{},ownerAlive:()=>true}});t.after(()=>monitor.stop());
+  const original=monitor.scan.bind(monitor);monitor.scan=(...args)=>{scans++;return original(...args);};
+  await monitor.start();assert.equal(scans,0);
+  fs.mkdirSync(path.join(root,'sessions'));const file=path.join(root,'sessions','late.jsonl');
+  append(file,header());append(file,{type:'event_msg',timestamp:new Date(stamp+100).toISOString(),payload:{type:'task_complete',turn_id:'while-waking'}});
+  active=true;await monitor.poller.tick();assert.equal(found.length,1);assert.equal(found[0].turnId,'while-waking');
+  await monitor.poller.tick();assert.equal(found.length,1);
+});
+
+test('existing Codex tails update without rediscovering the directory on every poll',t=>fixture(root=>{
+  fs.mkdirSync(path.join(root,'sessions'));const file=path.join(root,'sessions','incremental.jsonl');append(file,header());
+  const found=[],monitor=new CompletionMonitor({codexHome:root,since:stamp,onNotification:e=>found.push(e),discoveryMs:10000});
+  t.after(()=>monitor.stop());monitor.scan(true,stamp);const first=monitor.discoveredFiles;
+  append(file,event('existing-tail'));monitor.scan(false,stamp+1000);
+  assert.equal(monitor.discoveredFiles,first);assert.equal(found.length,1);
+}));

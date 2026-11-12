@@ -35,7 +35,7 @@ cat > "$TASK_HELPER/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 /usr/bin/plutil -insert AICompanionUnified -bool true "$TASK_APP/Contents/Info.plist"
-/usr/bin/plutil -insert AICompanionRevision -string 'ai-quota-pets-0.1.0' "$TASK_APP/Contents/Info.plist"
+/usr/bin/plutil -insert AICompanionRevision -string "ai-pets-$TASK_VERSION" "$TASK_APP/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleName -string 'AI额度挂件' "$TASK_APP/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleDisplayName -string 'AI额度挂件' "$TASK_APP/Contents/Info.plist"
 cp "$TASK_ROOT/gpt-niang-usage/assets/gemini-original.png" "$TASK_ROOT/gpt-niang-usage/assets/gemini-quotes.json" "$TASK_APP/Contents/Resources/"

@@ -3,20 +3,15 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {displayThreadName,isUserConversation,userThreadsSQL} from './speed-titles.mjs';
+import {RecentSpeedSamples} from './recent-speed.mjs';
 
 // Completed request output includes reasoning. Duration includes first-token,
 // tools, network and approval waits. No prompts or message bodies are emitted.
-export function sampleInterval(previous, next) {
-  if (!previous || !next || !Number.isFinite(previous.at) || !Number.isFinite(next.at)) return null;
-  const seconds = (next.at - previous.at) / 1000;
-  const outputTokens = next.outputTokens - previous.outputTokens;
-  if (seconds <= 0 || !Number.isSafeInteger(outputTokens) || outputTokens < 0) return null;
-  return {outputTokens, seconds, tokensPerSecond: outputTokens / seconds, at: next.at};
-}
 export class RolloutCounters {
   constructor() {
     this.total = null; this.reasoning = null; this.active = null;
     this.latest = null; this.state = 'unknown'; this.lastAt = null; this.model = null;
+    this.recent = new RecentSpeedSamples();
   }
   accept(record) {
     if (record?.type === 'turn_context') {
@@ -48,8 +43,9 @@ export class RolloutCounters {
     if(['task_complete','turn_aborted'].includes(event?.type)){
       const turn=this.active;
       if(turn?.id&&event.turn_id&&turn.id!==event.turn_id)return;
-      this.state=event.type==='turn_aborted'?'aborted':'idle';this.lastAt=at;
-      if(event.type==='task_complete'&&turn?.seen&&!turn.incomplete){
+      const rejected=event.error||['failed','cancelled','canceled','aborted','interrupted'].includes(event.status);
+      this.state=event.type==='turn_aborted'||rejected?'aborted':'idle';this.lastAt=at;
+      if(event.type==='task_complete'&&!rejected&&turn?.seen&&!turn.incomplete){
         const end=eventTime(event.completed_at)??at;
         const seconds=typeof event.duration_ms==='number'&&event.duration_ms>0?event.duration_ms/1000:(end-turn.start)/1000;
         if(Number.isFinite(seconds)&&seconds>0&&turn.output>=turn.reasoning){
@@ -58,6 +54,7 @@ export class RolloutCounters {
             reasoningOutputTokens:turn.reasoningKnown?turn.reasoning:null,
             responseOutputTokens:turn.reasoningKnown?turn.output-turn.reasoning:null,
             timeToFirstTokenSeconds:first,modelName:turn.mixedModels?'混合模型 / 思考档':turn.model,measurement:'request-average'};
+          this.recent.add(turn.id+':'+turn.start,{...this.latest,sampleAt:end,intervalSeconds:seconds});
         }
       }
       this.active=null;return;
@@ -102,6 +99,7 @@ export class RolloutTail {
       this.identity = stat.ino; this.offset = Math.max(0, stat.size - 4 * 1024 * 1024);
       this.pending = ''; this.counters = new RolloutCounters();
       this.skipFirst = this.offset > 0;
+      this.counters.recent.partial = this.skipFirst;
     }
     const remaining = Math.min(stat.size - this.offset, 4 * 1024 * 1024);
     if (remaining <= 0) return this.counters;
@@ -163,6 +161,7 @@ function run() {
             timeToFirstTokenSeconds:counters.latest?.timeToFirstTokenSeconds??null,
             reasoningOutputTokens:counters.latest?.reasoningOutputTokens??null,
             responseOutputTokens:counters.latest?.responseOutputTokens??null,
+            ...counters.recent.snapshot(),
             unavailableReason:counters.latest?null:'尚无完整的已完成回复计数与耗时，下一次回复完成后会更新。'};
         } catch { return output; }
       });

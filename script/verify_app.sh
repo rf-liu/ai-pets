@@ -5,6 +5,10 @@ APP="${1:-$ROOT_DIR/dist/GPTNiangMac.app}"
 MAIN="$APP/Contents/MacOS/GPTNiangMac"
 HELPER="$APP/Contents/Library/LoginItems/AICompanionLauncher.app/Contents/MacOS/AICompanionLauncher"
 codesign --verify --deep --strict "$APP"
+if [ -n "$(find "$APP/Contents" -type f \( -name '*.bak' -o -name '*.old' \) -print -quit)" ]; then
+  echo "Unexpected obsolete backup source in release" >&2
+  exit 1
+fi
 if [ -e "$APP/Contents/Helpers/GPTNiangUpdater" ] || [ -e "$APP/Contents/Resources/Backend/runtime/update.mjs" ]; then
   echo "Unexpected updater in release" >&2
   exit 1

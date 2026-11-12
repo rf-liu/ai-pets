@@ -1,5 +1,6 @@
 import {callRPC} from './gemini-usage.mjs';
-import {latestGenerationIndex} from './gemini-token-counts.mjs';
+import {latestGenerationIndex} from './gemini-generation-index.mjs';
+import {RecentSpeedSamples,RECENT_WINDOW_MS} from './recent-speed.mjs';
 
 export function durationSeconds(value){
   if(typeof value==='string'){
@@ -39,20 +40,26 @@ export function generationSample(record){
     measurement:'generation-average',sampleAt:Number.isFinite(createdAt)?createdAt+seconds*1000:null};
 }
 
-export function latestGeneration(raw){
+export function latestGeneration(raw,{history=new RecentSpeedSamples(),now=Date.now(),offset=0}={}){
   const records=(raw?.response??raw)?.generatorMetadata;
   if(!Array.isArray(records))throw new Error('Missing generation metadata');
-  for(let i=records.length-1;i>=0;i--){
+  let latest=null,oldest=Infinity;
+  for(let i=0;i<records.length;i++){
     const sample=generationSample(records[i]);
-    if(sample)return sample;
+    if(!sample)continue;
+    latest=sample;
+    if(Number.isFinite(sample.sampleAt))oldest=Math.min(oldest,sample.sampleAt);
+    history.add(offset+i,sample);
   }
-  return null;
+  history.partial=offset>0&&oldest>now-RECENT_WINDOW_MS;
+  return latest?{...latest,...history.snapshot(now)}:null;
 }
 
-export async function readGenerationSpeed(id,{rpc=callRPC,index=latestGenerationIndex}={}){
+export async function readGenerationSpeed(id,{rpc=callRPC,index=latestGenerationIndex,history=new RecentSpeedSamples(),now=Date.now()}={}){
   if(!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))throw new Error('invalid session id');
   let offset=0;
-  try{const value=await index(id);if(Number.isSafeInteger(value)&&value>=0)offset=Math.max(0,value-7);}catch{}
+  // Metadata only: bounded history for smoothing, never conversation messages.
+  try{const value=await index(id);if(Number.isSafeInteger(value)&&value>=0)offset=Math.max(0,value-255);}catch{}
   const raw=await rpc('GetCascadeTrajectoryGeneratorMetadata',{cascadeId:id,generatorMetadataOffset:offset,includeMessages:false});
-  return latestGeneration(raw);
+  return latestGeneration(raw,{history,now,offset});
 }

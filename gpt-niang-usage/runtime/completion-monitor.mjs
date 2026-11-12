@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 import {StringDecoder} from 'node:string_decoder';
 import {fileURLToPath} from 'node:url';
 import {CompletionTargetResolver} from './completion-target.mjs';
+import {AdaptivePoller,createHostCheck,bindMonitorLifetime} from './host-activity.mjs';
 
 const NORMAL_ENDINGS=new Set(['task_complete','turn_complete']);
 const MAX_READ_BYTES=4*1024*1024,MAX_LINE_CHARACTERS=1024*1024,MAX_SEEN_TURNS=4096;
@@ -45,11 +46,12 @@ export function parseCompletionRecord(record,{sessionId='',seenTurns=null,since=
 function fileIdentity(stat){return `${stat.dev}:${stat.ino}`;}
 
 export class CompletionRolloutTail {
-  constructor(file,{sessionId=path.basename(file),baseline=false,since=0}={}) {
+  constructor(file,{sessionId=path.basename(file),baseline=false,since=0,startAtTail=false}={}) {
     this.file=file;this.sessionId=sessionId;this.since=since;this.offset=0;
     this.pending='';this.discardingLongLine=false;this.decoder=new StringDecoder('utf8');this.seenTurns=new Set();
     const stat=fs.statSync(file);this.identity=fileIdentity(stat);
     if(baseline)this.offset=stat.size;
+    else if(startAtTail){this.offset=Math.max(0,stat.size-MAX_READ_BYTES);this.discardingLongLine=this.offset>0;}
     this.lineStartOffset=this.offset;this.lastKnownSize=stat.size;this.boundaryBytes=Buffer.alloc(0);this.boundaryProof=null;
   }
   update() {
@@ -147,14 +149,18 @@ function checkpointMatches(file,tail,checkpoint){
 }
 
 export class CompletionMonitor {
-  constructor({codexHome=defaultCodexHome(),intervalMs=1000,onNotification=()=>{},since=Date.now(),stateFile=null}={}){
+  constructor({codexHome=defaultCodexHome(),intervalMs=2500,onNotification=()=>{},since=Date.now(),stateFile=null,
+    hostCheck=async()=>true,discoveryMs=0,watch=false,pollerOptions={}}={}){
     this.codexHome=codexHome;this.intervalMs=intervalMs;this.onNotification=onNotification;this.since=since;
     this.stateFile=stateFile;this.resume=false;this.lastStateSave=0;this.lastEnded=0;
-    this.tails=new Map();this.subagentSessions=new Map();this.seenTurns=new Set();this.checkpoints=new Map();this.timer=null;
+    this.tails=new Map();this.subagentSessions=new Map();this.seenTurns=new Set();this.checkpoints=new Map();this.poller=null;
+    this.hostCheck=hostCheck;this.discoveryMs=discoveryMs;this.watchEnabled=watch;this.watchers=new Map();
+    this.pollerOptions=pollerOptions;
+    this.discoveredFiles=[];this.lastDiscovery=-Infinity;this.discoveryDirty=true;
     this.targetResolver=new CompletionTargetResolver(codexHome);
   }
   start(){
-    if(this.timer)return;
+    if(this.poller)return;
     if(this.stateFile){
       const saved=loadMonitorState(this.stateFile);
       if(saved!==null){
@@ -163,9 +169,12 @@ export class CompletionMonitor {
         this.resume=true;
       }
     }
-    this.scan(!this.resume);
-    this.persistState(true);
-    this.timer=setInterval(()=>this.scan(false),this.intervalMs);this.timer.unref?.();
+    // Keep `since` across sleeping/waking. A delayed first poll must not baseline
+    // away a short turn which finished after this process was started.
+    this.poller=new AdaptivePoller({...this.pollerOptions,checkActive:this.hostCheck,activeMs:this.intervalMs,
+      work:()=>this.scan(false),onPause:()=>{try{this.scan(false);}finally{this.closeWatchers();this.discoveryDirty=true;}},
+      onOrphan:()=>process.exit(0)});
+    return this.poller.start();
   }
   persistState(force=false){
     if(!this.stateFile)return;
@@ -174,7 +183,11 @@ export class CompletionMonitor {
     this.lastStateSave=now;saveMonitorState(this.stateFile,now,this.lastEnded);
   }
   scan(baseline=false,now=Date.now()){
-    const files=listRolloutFiles(this.codexHome),present=new Set();
+    if(baseline||this.discoveryDirty||now<this.lastDiscovery||now-this.lastDiscovery>=this.discoveryMs){
+      this.discoveredFiles=listRolloutFiles(this.codexHome);this.lastDiscovery=now;this.discoveryDirty=false;
+      this.watchRoots();
+    }
+    const files=this.discoveredFiles,present=new Set();
     for(const file of files){
       const sessionId=path.basename(file);present.add(sessionId);
       const subagent=this.subagentSessions.get(sessionId);
@@ -187,7 +200,11 @@ export class CompletionMonitor {
         // from their start and filtered by `since` instead of being skipped.
         let fileBaseline=baseline;
         if(fileBaseline && this.resume){try{if(fs.statSync(file).mtimeMs>=this.since)fileBaseline=false;}catch{}}
-        try{tail=new CompletionRolloutTail(file,{sessionId,baseline:fileBaseline,since:this.since});}catch{continue;}
+        try{
+          if(this.poller&&!this.checkpoints.has(sessionId)&&fs.statSync(file).mtimeMs<this.since)fileBaseline=true;
+          tail=new CompletionRolloutTail(file,{sessionId,baseline:fileBaseline,since:this.since,
+            startAtTail:Boolean(this.poller)&&!this.checkpoints.has(sessionId)});
+        }catch{continue;}
         if(fileBaseline && header.baselineBoundary?.offset===tail.offset){tail.boundaryBytes=header.baselineBoundary.bytes;tail.boundaryProof=header.baselineBoundary.proof;}
         const checkpoint=this.checkpoints.get(sessionId);
         if(checkpoint){
@@ -251,14 +268,24 @@ export class CompletionMonitor {
     this.checkpoints.delete(id);this.checkpoints.set(id,checkpoint);
     if(this.checkpoints.size>MAX_CHECKPOINTS)this.checkpoints.delete(this.checkpoints.keys().next().value);
   }
-  stop(){if(this.timer)clearInterval(this.timer);this.timer=null;this.tails.clear();this.subagentSessions.clear();this.seenTurns.clear();this.checkpoints.clear();}
+  watchRoots(){
+    if(!this.watchEnabled)return;
+    for(const name of ['sessions','archived_sessions']){
+      const root=path.join(this.codexHome,name);if(this.watchers.has(root))continue;
+      try{
+        const watcher=fs.watch(root,{recursive:true},type=>{if(type==='rename')this.discoveryDirty=true;});
+        watcher.on('error',()=>{watcher.close();this.watchers.delete(root);});this.watchers.set(root,watcher);
+      }catch{}
+    }
+  }
+  closeWatchers(){for(const watcher of this.watchers.values())watcher.close();this.watchers.clear();}
+  stop(){this.poller?.stop();this.poller=null;this.closeWatchers();this.tails.clear();this.subagentSessions.clear();this.seenTurns.clear();this.checkpoints.clear();this.discoveredFiles=[];this.discoveryDirty=true;}
 }
 
 function run(){
   const stateFile=process.argv[2]||null;
-  const monitor=new CompletionMonitor({onNotification:event=>process.stdout.write(JSON.stringify(event)+'\n'),stateFile});
-  monitor.start();process.stdin.resume();
-  process.stdin.on('end',()=>{monitor.stop();process.exit(0);});
-  process.on('SIGTERM',()=>{monitor.stop();process.exit(0);});
+  const monitor=new CompletionMonitor({onNotification:event=>process.stdout.write(JSON.stringify(event)+'\n'),stateFile,
+    hostCheck:createHostCheck('gpt'),discoveryMs:10000,watch:true});
+  bindMonitorLifetime(monitor);void monitor.start();
 }
 if(process.argv[1] && fileURLToPath(import.meta.url)===path.resolve(process.argv[1]))run();

@@ -75,9 +75,13 @@ struct ThreadSpeedView: View {
             Text(model.text(model.profile == .gemini ? "按最近一次模型生成的總輸出 tokens（正文 + 思考）÷（首 token 等待 + 流式生成時間）計算。每 3 秒讀取本機統計，不會自動發送測速消息。" : "按最近完成的一輪回覆的總輸出 tokens（正文 + 思考）÷整輪耗時計算，包含首字、工具、網路與確認等待。每 3 秒讀取本機統計，不會自動發送測速消息。"))
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             VStack(alignment: .leading, spacing: 8) {
-                Text(model.text("最近平均速度 · 分模型")).font(.headline)
-                Text(model.text("同一模型與思考檔分別統計 · 含思考與等待"))
+                Text(model.text("近 3 天平均速度 · 分模型")).font(.headline)
+                Text(model.text("統計目前列表中可讀取的有效樣本；模型與思考檔分開，包含思考與等待。"))
                     .font(.caption).foregroundStyle(.secondary)
+                if store.rows.contains(where: { $0.recentPartial == true }) {
+                    Text(model.text("部分歷史記錄未載入，平均值僅涵蓋已讀取樣本。"))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if groups.isEmpty {
                     Text(model.text("等待有效統計")).font(.caption).foregroundStyle(.secondary)
                 } else {
@@ -87,7 +91,7 @@ struct ThreadSpeedView: View {
                                 HStack(alignment: .center) {
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(model.text(group.modelName)).font(.system(size: 14, weight: .medium)).lineLimit(2)
-                                        Text(model.text("%@ 個會話 · 總 tokens ÷ 總耗時", String(group.summary.count)))
+                                        Text(model.text("%@ 個樣本 · %@ 個會話 · 總 tokens ÷ 總耗時", String(group.summary.sampleCount), String(group.summary.count)))
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer(minLength: 10)

@@ -121,8 +121,11 @@ final class CompletionNotificationController {
         guard FileManager.default.fileExists(atPath: script.path) else { return }
         let process = Process(), stdin = Pipe(), stdout = Pipe(), token = inbox.begin(), queue = inbox
         process.executableURL = node; process.arguments = [script.path]
+        if model.profile == .gpt { process.arguments?.append(model.dataDirectory.appendingPathComponent("completion-state.json").path) }
         process.standardInput = stdin; process.standardOutput = stdout; process.standardError = FileHandle.nullDevice
         process.environment = ProcessInfo.processInfo.environment
+        process.environment?["AI_PETS_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
+        process.environment?["AI_PETS_HOST_STATE_FILE"] = model.dataDirectory.deletingLastPathComponent().appendingPathComponent("unified-status.json").path
         stdout.fileHandleForReading.readabilityHandler = { handle in
             let bytes = handle.availableData
             if bytes.isEmpty { handle.readabilityHandler = nil; return }; queue.append(bytes, token: token)

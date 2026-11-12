@@ -35,7 +35,7 @@ test('historical metadata is paged from the real database index and conversation
     rpc:async(method,payload)=>{request={method,payload};return {generatorMetadata:[record()]};}
   });
   assert.equal(request.method,'GetCascadeTrajectoryGeneratorMetadata');
-  assert.equal(request.payload.generatorMetadataOffset,2926);assert.equal(request.payload.includeMessages,false);
+  assert.equal(request.payload.generatorMetadataOffset,2678);assert.equal(request.payload.includeMessages,false);
   assert.equal(sample.tokensPerSecond,50);
 });
 test('a session without a local database can still use metadata RPC',async()=>{

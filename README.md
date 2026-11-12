@@ -37,7 +37,7 @@
 需要 **macOS 13+、Node.js 20+**，以及你要跟随的宿主 App。当前提供的安装包在 Apple Silicon 上构建和验证；Intel 尚未实机验证。
 
 1. 安装 Node.js，例如 `brew install node`。
-2. 从 [Releases](https://github.com/rf-liu/ai-pets/releases/latest) 下载 `ai-pets-v0.1.0-macos-arm64.zip`，核对同页 `SHA256SUMS.txt`。
+2. 从 [Releases](https://github.com/rf-liu/ai-pets/releases/latest) 下载 `ai-pets-v0.2.0-macos-arm64.zip`，核对同页 `SHA256SUMS.txt`。
 3. 解压，将 `GPTNiangMac.app` 放入「应用程序」，**从 Finder 手动打开一次**。这是 AI 桌宠的兼容应用名称。
 4. 打开 Codex / Antigravity / Claude，宠物会跟随相应窗口。DeepSeek 余额需要另外配置[桥接](integrations/README.md)。
 
@@ -49,7 +49,7 @@
 
 - 只读取本机已有记录，不自动发送聊天或测速请求。
 - GPT / Claude Code / DS 统计整轮完成耗时，包括思考、工具与等待；Gemini 采用宿主可用的首 token 等待与生成时长。**它们不是模型瞬时解码速度，不同宿主口径不能直接排名**。
-- 最近平均值按总输出 tokens ÷ 总耗时计算，缺失计数显示不可用，不按零处理。
+- 顶部按模型和思考档汇总最近 3 天的已读取有效样本，以总输出 tokens ÷ 总耗时计算；下方卡片保留最近一轮自己的 tokens、耗时与 TPS。缺失、过期或无时间戳的数据不按零或旧值补入。历史被截断时会提示，范围限当前列表中的可读记录。
 - DS 今日消耗只覆盖已连接并观测到的余额变化；充值与赠金不会抵消已观测消耗。每轮金额是估算，未知模型或价格规则不显示为零。
 - 设置、语录和运行快照保存在 `~/Library/Application Support/AIQuotaCompanion/`，按四个 AI 分开。不会上传到 GitHub；程序没有遥测上传。
 

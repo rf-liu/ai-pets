@@ -51,3 +51,8 @@ test('incremental tail handles partial lines and file truncation',t=>{
 test('paths outside session roots and symlink escapes remain rejected',t=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'niang-path-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));fs.mkdirSync(path.join(dir,'sessions'));const file=path.join(dir,'sessions','a.jsonl');fs.writeFileSync(file,'');const outside=path.join(dir,'private.jsonl');fs.writeFileSync(outside,'');assert.equal(allowedRollout(file,dir),fs.realpathSync(file));assert.equal(allowedRollout(outside,dir),null);fs.symlinkSync(outside,path.join(dir,'sessions','escape.jsonl'));assert.equal(allowedRollout(path.join(dir,'sessions','escape.jsonl'),dir),null);
 });
+
+test('explicitly failed task-complete records do not enter recent completed-turn history',()=>{
+ const c=new RolloutCounters();c.accept(start(1000));c.accept(usage(3000,100,20));c.accept(event(6000,'task_complete',{turn_id:'a',status:'failed',duration_ms:5000}));
+ assert.equal(c.latest,null);assert.equal(c.state,'aborted');assert.deepEqual(c.recent.snapshot(6000).recentSamples,[]);
+});

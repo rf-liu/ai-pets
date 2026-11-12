@@ -4,6 +4,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {estimateMessageCost} from './deepseek-cost.mjs';
+import {RecentSpeedSamples} from './recent-speed.mjs';
 const caches=new Map();
 const number=x=>typeof x==='number'&&Number.isFinite(x)&&x>=0;
 const at=x=>typeof x==='number'?x:Date.parse(x??'');
@@ -14,7 +15,7 @@ function files(root,depth=4){
 function rowID(profile,id){return createHash('sha256').update(profile+':'+id).digest('hex').slice(0,24);}
 
 export class ClaudeTurnParser {
- constructor(){this.active=null;this.latest=null;this.rejection=null;this.lastAt=null;}
+ constructor(){this.active=null;this.latest=null;this.rejection=null;this.lastAt=null;this.recent=new RecentSpeedSamples();}
  accept(record){
   const time=at(record?.timestamp);if(!Number.isFinite(time)||record.isSidechain)return;
   this.lastAt=time;
@@ -34,6 +35,7 @@ export class ClaudeTurnParser {
   const known=values.every(x=>x.thinking!==null),thinking=known?values.reduce((s,x)=>s+x.thinking,0):null;
   if(thinking!==null&&thinking>output)return;
   this.latest={tokensPerSecond:output/seconds,outputTokens:output,reasoningOutputTokens:thinking,responseOutputTokens:thinking===null?null:output-thinking,intervalSeconds:seconds,sampleAt:time,measurement:'request-average',modelName:models.length===1?models[0]:'混合模型 / 思考档'};
+  this.recent.add(message.id,this.latest);
   this.active=null;
  }
 }
@@ -41,7 +43,7 @@ class ClaudeTail {
  constructor(file){this.file=file;this.offset=0;this.identity=null;this.pending='';this.parser=new ClaudeTurnParser();}
  update(){
   const s=fs.statSync(this.file);
-  if(this.identity!==s.ino||s.size<this.offset){this.identity=s.ino;this.offset=Math.max(0,s.size-8*1024*1024);this.pending='';this.parser=new ClaudeTurnParser();this.skip=this.offset>0;}
+  if(this.identity!==s.ino||s.size<this.offset){this.identity=s.ino;this.offset=Math.max(0,s.size-8*1024*1024);this.pending='';this.parser=new ClaudeTurnParser();this.skip=this.offset>0;this.parser.recent.partial=this.skip;}
   const count=Math.min(s.size-this.offset,8*1024*1024);if(count<=0)return this.parser;
   const buffer=Buffer.alloc(count),fd=fs.openSync(this.file,'r');let read;try{read=fs.readSync(fd,buffer,0,count,this.offset);}finally{fs.closeSync(fd);}this.offset+=read;
   const lines=(this.pending+buffer.subarray(0,read).toString('utf8')).split('\n');this.pending=lines.pop();if(this.pending.length>1024*1024){this.pending='';this.skip=true;}
@@ -54,18 +56,21 @@ export function readClaudeSessions(){
  const root=path.join(os.homedir(),'Library/Application Support/Claude/claude-code-sessions');
  const metadata=files(root,3).filter(x=>path.basename(x).startsWith('local_')&&x.endsWith('.json')).map(file=>{try{const data=JSON.parse(fs.readFileSync(file,'utf8'));return {...data,_file:file};}catch{return null;}}).filter(x=>x&&!x.isArchived&&x.cliSessionId).sort((a,b)=>(at(b.lastActivityAt)||0)-(at(a.lastActivityAt)||0)).slice(0,12);
  const lookup=new Map(files(path.join(os.homedir(),'.claude/projects'),1).filter(x=>x.endsWith('.jsonl')).map(x=>[path.basename(x,'.jsonl'),x]));
- return metadata.map(meta=>{
+ const rows=metadata.map(meta=>{
   const row={id:rowID('claude',meta.cliSessionId),title:String(meta.title||'Claude Code 对话').slice(0,160),state:'idle',tokensPerSecond:null,modelName:typeof meta.model==='string'?meta.model:'Claude',sampleAt:null,outputTokens:null,intervalSeconds:null};
   const file=lookup.get(meta.cliSessionId);if(!file)return {...row,unavailableReason:'该 Code 对话尚无可读取的本地 token 记录。'};
   try{
    const key='claude:'+file;if(!caches.has(key))caches.set(key,new ClaudeTail(file));const parsed=caches.get(key).update();
-   return {...row,...parsed.latest,_rejection:parsed.rejection,state:parsed.active&&(!parsed.latest||parsed.lastAt>parsed.latest.sampleAt)&&Date.now()-parsed.lastAt<300000?'running':'idle',unavailableReason:parsed.latest?null:'等待一轮 Code 回复完成并返回有效计数。'};
+   return {...row,...parsed.latest,...parsed.recent.snapshot(),_rejection:parsed.rejection,state:parsed.active&&(!parsed.latest||parsed.lastAt>parsed.latest.sampleAt)&&Date.now()-parsed.lastAt<300000?'running':'idle',unavailableReason:parsed.latest?null:'等待一轮 Code 回复完成并返回有效计数。'};
   }catch{return {...row,unavailableReason:'本地 Code 记录正在同步，请稍后。'};}
  });
+ const active=new Set(metadata.map(meta=>'claude:'+lookup.get(meta.cliSessionId)));
+ for(const key of caches.keys())if(key.startsWith('claude:')&&!active.has(key))caches.delete(key);
+ return rows;
 }
 
 export class DshTurnParser {
- constructor(){this.active=null;this.latest=null;this.title=null;this.id=null;this.depth=0;this.lastAt=null;this.costRecords=[];}
+ constructor(){this.active=null;this.latest=null;this.title=null;this.id=null;this.depth=0;this.lastAt=null;this.costRecords=[];this.recent=new RecentSpeedSamples();}
  accept(event){
   if(event?.type==='session'){this.id=event.id;this.depth=event.delegationDepth??0;return;}
   const time=event?.time;if(!number(time))return;this.lastAt=time;const data=event.data??{};
@@ -84,6 +89,7 @@ export class DshTurnParser {
    this.costRecords.push({turn:turn.turn,at:time,cost:estimatedCost});
    if(data.reason?.kind!=='completed'||turn.invalid||!turn.seen.size||seconds<=0)return;
    this.latest={tokensPerSecond:turn.output/seconds,outputTokens:turn.output,intervalSeconds:seconds,sampleAt:time,estimatedCost,costCurrency:'CNY',measurement:'request-average',modelName:turn.models.size===1?[...turn.models][0]:turn.models.size?'混合模型':'DeepSeek Harness'};
+   this.recent.add(turn.turn+':'+turn.start,this.latest);
   }
  }
 }
@@ -100,9 +106,11 @@ export function readDshSessions(){
     caches.set(key,{mtime:stat.mtimeMs,size:stat.size,parser});
    }
    if(!parser?.id||parser.depth>0||ids.has(parser.id))continue;ids.add(parser.id);
-   rows.push({id:rowID('dsh',parser.id),title:String(parser.title||'DeepSeek Harness 对话').slice(0,160),state:parser.active&&Date.now()-parser.lastAt<300000?'running':'idle',tokensPerSecond:null,sampleAt:null,outputTokens:null,intervalSeconds:null,...parser.latest,_costRecords:parser.costRecords,unavailableReason:parser.latest?null:'等待一轮 Harness 回复完成并返回有效计数。'});
+   rows.push({id:rowID('dsh',parser.id),title:String(parser.title||'DeepSeek Harness 对话').slice(0,160),state:parser.active&&Date.now()-parser.lastAt<300000?'running':'idle',tokensPerSecond:null,sampleAt:null,outputTokens:null,intervalSeconds:null,...parser.latest,...parser.recent.snapshot(),_costRecords:parser.costRecords,unavailableReason:parser.latest?null:'等待一轮 Harness 回复完成并返回有效计数。'});
   }catch{}
  }
+ const active=new Set(paths.map(file=>'dsh:'+file));for(const key of caches.keys())if(key.startsWith('dsh:')&&!active.has(key))caches.delete(key);
  return rows.sort((a,b)=>(b.sampleAt??0)-(a.sampleAt??0)).slice(0,12);
 }
 export function readLocalSessions(profile){return profile==='claude'?readClaudeSessions():readDshSessions();}
+export function clearLocalSessionCaches(profile){for(const key of caches.keys())if(key.startsWith((profile==='claude'?'claude':'dsh')+':'))caches.delete(key);}
