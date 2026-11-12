@@ -49,9 +49,9 @@ test('late first scan after wake does not reset the startup boundary or duplicat
 });
 test('temporary Gemini RPC failures preserve a running transition without repeated notifications',async()=>{
   let phase=0,found=[];
-  const scan=geminiCompletionScan({now:()=>10000,emit:e=>found.push(e),readSummaries:async()=>{
+  const scan=geminiCompletionScan({now:()=>10000,since:0,settleMs:0,emit:e=>found.push(e),readEnd:async()=>({endedAt:9000,userInputStepIndex:2,lastStepIndex:3,executionId:'fixture'}),readSummaries:async()=>{
     if(phase===1)throw new Error('temporary fixture failure');
-    return [{id:'a',depth:0,title:'fixture',lastModified:9000,status:phase===0?'CASCADE_RUN_STATUS_RUNNING':'CASCADE_RUN_STATUS_IDLE'}];
+    return [{id:'a',depth:0,title:'fixture',lastModified:9000,lastUserInputStepIndex:2,waitingStepCount:0,reason:'EXECUTOR_TERMINATION_REASON_NO_TOOL_CALL',stepCount:4,status:phase===0?'CASCADE_RUN_STATUS_RUNNING':'CASCADE_RUN_STATUS_IDLE'}];
   }});
   await scan();phase=1;await assert.rejects(scan());phase=2;await scan();await scan();assert.equal(found.length,1);
 });

@@ -116,6 +116,10 @@ struct SettingsView: View {
                     Toggle(model.text("回答结束提醒"), isOn: $model.completionEnabled)
                     Text(model.profile == .deepseek ? "回复完成提醒使用温和微笑，点击返回后保持约 1.5 秒；按住摸头，连点可随机换表情。" : "普通点击有微笑反馈，连点达到设定次数后随机换脸；点击完成提醒返回后保持开心表情约 1.5 秒。")
                         .font(.caption).foregroundStyle(.secondary)
+                    if model.profile == .gemini {
+                        Text(model.text("Gemini 僅在本輪正常最終回覆已核對且狀態穩定後提醒；等待工具、確認或子任務時不提醒，同一輪只提醒一次。"))
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                     Toggle(model.text("登入 Mac 時自動開啟"), isOn: $model.loginRequested)
                         .onChange(of: model.loginRequested) { value in
                             do {

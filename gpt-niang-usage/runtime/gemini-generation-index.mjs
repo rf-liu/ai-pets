@@ -7,7 +7,7 @@ import {stepGenerationTime} from './gemini-step-time.mjs';
 const execute=promisify(execFile);
 
 // Read only the metadata index, never conversation message blobs.
-async function conversationDatabase(id,conversationsRoot){
+export async function conversationDatabase(id,conversationsRoot){
   if(!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id))throw new Error('invalid session id');
   const base=await fs.realpath(conversationsRoot);
   const file=await fs.realpath(path.join(base,id+'.db'));

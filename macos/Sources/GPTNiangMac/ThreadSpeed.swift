@@ -67,15 +67,19 @@ struct ThreadSpeedView: View {
         let groups = ModelSpeedSummary.groups(rows: store.rows)
         return VStack(alignment: .leading, spacing: 14) {
             Text(model.text("聊天速度")).font(.system(size: 25, weight: .semibold, design: .rounded))
-            Text(model.text("請求平均 TPS · 含思考與等待")).font(.headline)
+            Text(model.text(model.profile == .gemini ? "生成 TPS · 含思考與首字等待" : "請求平均 TPS · 含思考與等待")).font(.headline)
             if model.profile == .claude {
                 Text("Claude 桌面版的 Code 对话 · 普通 Chat / Cowork 暂无可读的本地 token 计数")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text(model.text(model.profile == .gemini ? "按最近一次模型生成的總輸出 tokens（正文 + 思考）÷（首 token 等待 + 流式生成時間）計算。每 3 秒讀取本機統計，不會自動發送測速消息。" : "按最近完成的一輪回覆的總輸出 tokens（正文 + 思考）÷整輪耗時計算，包含首字、工具、網路與確認等待。每 3 秒讀取本機統計，不會自動發送測速消息。"))
+            Text(model.text(model.profile == .gemini ? "按最近一次模型生成的輸出總 tokens（已含思考）÷（首 token 等待 + 流式生成時間）計算。每 3 秒讀取本機統計，不會自動發送測速消息。" : "按最近完成的一輪回覆的總輸出 tokens（正文 + 思考）÷整輪耗時計算，包含首字、工具、網路與確認等待。每 3 秒讀取本機統計，不會自動發送測速消息。"))
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if model.profile == .gemini {
+                Text(model.text("包含中間模型調用的生成輸出；不含工具或程式執行等待。"))
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             VStack(alignment: .leading, spacing: 8) {
-                Text(model.text("近 3 天平均速度 · 分模型")).font(.headline)
+                Text(model.text(model.profile == .gemini ? "近 3 天生成平均速度 · 分模型" : "近 3 天平均速度 · 分模型")).font(.headline)
                 Text(model.text("統計目前列表中可讀取的有效樣本；模型與思考檔分開，包含思考與等待。"))
                     .font(.caption).foregroundStyle(.secondary)
                 if store.rows.contains(where: { $0.recentPartial == true }) {
@@ -124,7 +128,7 @@ struct ThreadSpeedView: View {
                             Text(model.text(row.measurement == "request-average" ? "%@ 輸出 tokens / %@ 秒 · 最近完成的一輪回覆" : "%@ 輸出 tokens / %@ 秒 · 最近一次生成", String(tokens), String(format: "%.2f", interval)))
                                 .font(.caption).foregroundStyle(.secondary)
                             if let reasoning = row.reasoningOutputTokens ?? row.thinkingOutputTokens, let response = row.responseOutputTokens {
-                                Text(model.text("正文 %@ · 思考 %@ tokens", String(response), String(reasoning))).font(.caption).foregroundStyle(.secondary)
+                                Text(model.text(model.profile == .gemini ? "非思考輸出 %@ · 思考 %@ tokens" : "正文 %@ · 思考 %@ tokens", String(response), String(reasoning))).font(.caption).foregroundStyle(.secondary)
                             }
                             if let first = row.timeToFirstTokenSeconds, let stream = row.streamingSeconds {
                                 Text(model.text("首 token %@ 秒 · 流式生成 %@ 秒", String(format: "%.2f", first), String(format: "%.2f", stream)))

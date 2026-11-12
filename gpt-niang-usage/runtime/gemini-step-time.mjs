@@ -11,7 +11,7 @@ function varint(bytes, offset) {
   }
   throw new Error('Invalid metadata integer');
 }
-function visit(bytes, consume) {
+export function visitMetadata(bytes, consume) {
   let offset = 0;
   while (offset < bytes.length) {
     let tag; [tag, offset] = varint(bytes, offset);
@@ -29,9 +29,9 @@ function visit(bytes, consume) {
     } else throw new Error('Unsupported metadata wire type');
   }
 }
-function timestamp(bytes) {
+export function protobufTimestamp(bytes) {
   let seconds = 0n, nanos = 0n;
-  visit(bytes, (field, wire, value) => {
+  visitMetadata(bytes, (field, wire, value) => {
     if (field === 1 || field === 2) {
       if (wire !== 0) throw new Error('Invalid timestamp');
       if (field === 1) seconds = value; else nanos = value;
@@ -44,12 +44,26 @@ function timestamp(bytes) {
 export function stepGenerationTime(bytes) {
   try {
     let result = null;
-    visit(bytes, (field, wire, value) => {
+    visitMetadata(bytes, (field, wire, value) => {
       if (field === 7) {
         if (wire !== 2) throw new Error('Invalid completion timestamp');
-        result = timestamp(value);
+        result = protobufTimestamp(value);
       }
     });
     return result;
   } catch { return null; }
+}
+
+export function stepMetadata(bytes) {
+  try {
+    const result={createdAt:null,generatedAt:null,completedAt:null,source:null,executionId:null};
+    visitMetadata(bytes,(field,wire,value)=>{
+      if([1,7,8].includes(field)){
+        if(wire!==2)throw new Error('Invalid step time');
+        result[field===1?'createdAt':field===7?'generatedAt':'completedAt']=protobufTimestamp(value);
+      }else if(field===3&&wire===0)result.source=Number(value);
+      else if(field===12&&wire===2&&value.length<=256)result.executionId=value.toString('utf8');
+    });
+    return result;
+  }catch{return null;}
 }

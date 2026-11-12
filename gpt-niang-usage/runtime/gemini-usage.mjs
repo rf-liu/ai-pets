@@ -104,6 +104,11 @@ export async function trajectorySummaries() {
   const response=await callRPC('GetAllCascadeTrajectories');
   return Object.entries(response.trajectorySummaries??{}).map(([id,value])=>({
     id,title:String(value.summary??value.annotations?.title??'').split('\n')[0].slice(0,120),status:String(value.status??''),lastModified:Date.parse(value.lastModifiedTime??''),stepCount:Number(value.stepCount??0),
-    reason:String(value.latestExecutorTerminationReason??''),depth:Number(value.trajectoryMetadata?.nestingDepth??0)
+    reason:String(value.latestExecutorTerminationReason??''),depth:Number(value.trajectoryMetadata?.nestingDepth??0),
+    lastUserInputStepIndex:Number.isSafeInteger(value.lastUserInputStepIndex)?value.lastUserInputStepIndex:null,
+    lastUserInputTime:Date.parse(value.lastUserInputTime??''),
+    waitingStepCount:Array.isArray(value.waitingSteps)?value.waitingSteps.length:0,
+    notFullyIdle:Boolean(value.notFullyIdle),hasActiveChildren:Boolean(value.hasActiveChildren),
+    hasRunningSubagents:Boolean(value.hasRunningSubagents),killed:Boolean(value.killed),interrupted:Boolean(value.interrupted)
   }));
 }
