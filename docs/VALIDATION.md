@@ -10,7 +10,9 @@
 - release 构建、签名、最低 macOS 13.0、主程序与启动助手架构一致性及 ZIP 完整性检查通过；安装包无 `.bak`、`.old` 或旧 Gemini 差分计数模块。
 - 宿主休眠测试确认不调用日志/RPC工作函数；退出与父进程丢失测试确认四种监控停止。没有把某次 CPU 快照当作长期 0% 占用或完整内存回收的证据。
 
-GitHub Actions 的 XCTest 与当前提交验证结果另行记录。
+[GitHub Actions 43192044219](https://github.com/rf-liu/ai-pets/actions/runs/43192044219) 已通过：提交 `73a48b62cfe8ad8a1d2223aa02961c7a5d989625` 的 195 项 Node 测试、108 项 XCTest、release 构建与发布兼容性检查全部成功。XCTest 来自 GitHub runner 的 Xcode，区别于本机独立断言适配器。
+
+本机安装后核对通过：新版本与已验证产物一致、活动工作进程归属于新主进程、四套偏好/语录/音效保留，安装目录无旧 `.bak` 源码。
 
 ## 0.1.0 历史验证
 
