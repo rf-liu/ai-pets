@@ -7,10 +7,25 @@ import {visitMetadata,stepMetadata} from './gemini-step-time.mjs';
 
 const execute=promisify(execFile);
 const NORMAL_REASONS=new Set(['EXECUTOR_TERMINATION_REASON_NO_TOOL_CALL','EXECUTOR_TERMINATION_REASON_TERMINAL_STEP_TYPE']);
+export function hasUnfinishedWork(row){
+  return row.status!=='CASCADE_RUN_STATUS_IDLE'||row.notFullyIdle||row.hasActiveChildren||row.hasRunningSubagents||row.waitingStepCount>0;
+}
 export function fullyIdle(row){
-  return row.status==='CASCADE_RUN_STATUS_IDLE'&&NORMAL_REASONS.has(row.reason)&&
-    !row.notFullyIdle&&!row.hasActiveChildren&&!row.hasRunningSubagents&&!row.killed&&!row.interrupted&&
-    row.waitingStepCount===0;
+  return !hasUnfinishedWork(row)&&NORMAL_REASONS.has(row.reason)&&!row.killed&&!row.interrupted&&row.waitingStepCount===0;
+}
+// AGY can report the parent IDLE without hasRunningSubagents while a linked
+// browser agent is RUNNING. Use explicit IDs, never titles or activity text.
+export function activeDescendantRoots(rows){
+  const byId=new Map(rows.map(row=>[row.id,row])),blocked=new Set();
+  for(const row of rows){
+    if(!hasUnfinishedWork(row))continue;
+    if(row.rootId&&row.rootId!==row.id)blocked.add(row.rootId);
+    const seen=new Set([row.id]);let parent=row.parentId;
+    while(parent&&!seen.has(parent)){
+      seen.add(parent);blocked.add(parent);parent=byId.get(parent)?.parentId;
+    }
+  }
+  return blocked;
 }
 export function executorMetadata(bytes){
   try{
@@ -35,6 +50,10 @@ export function verifiedTaskEnd(row,execution,steps){
   const first=steps.find(step=>step.idx===user),last=steps.find(step=>step.idx===execution.lastStepIndex);
   if(first?.step_type!==14||first.status!==3||last?.status!==3)return null;
   if(!(execution.reason===4&&last.step_type===15 || execution.reason===8&&last.step_type===2))return null;
+  // A final-looking reply can precede completion of an earlier browser/tool
+  // invocation. Check the entire current input interval, not only the tail.
+  const terminalStatuses=new Set([3,4,5,6,7,12]);
+  if(steps.some(step=>step.idx>=user&&step.idx<row.stepCount&&!terminalStatuses.has(step.status)))return null;
   // Only completed housekeeping may follow the final reply. Generic tools,
   // another user input, waiting steps and partial reads cannot prove an end.
   const trailing=steps.filter(step=>step.idx>execution.lastStepIndex);
@@ -55,7 +74,9 @@ export async function readTaskEnd(row,{conversationsRoot=path.join(os.homedir(),
   const execution=executorMetadata(Buffer.from(raw,'hex'));
   if(!execution||execution.lastStepIndex<=row.lastUserInputStepIndex||execution.lastStepIndex>=row.stepCount)return null;
   const user=row.lastUserInputStepIndex,last=execution.lastStepIndex;
-  const query=`SELECT idx,step_type,status,CASE WHEN idx IN (${user},${last}) AND length(metadata)<=65536 THEN hex(metadata) ELSE NULL END AS metadata FROM steps WHERE idx=${user} OR idx>=${last} ORDER BY idx LIMIT 66;`;
+  // Include at most one unfinished middle step as a rejection sentinel. This
+  // stays bounded even for long conversations and never reads step_payload.
+  const query=`SELECT idx,step_type,status,CASE WHEN idx IN (${user},${last}) AND length(metadata)<=65536 THEN hex(metadata) ELSE NULL END AS metadata FROM steps WHERE idx=${user} OR idx>=${last} OR idx=(SELECT idx FROM steps WHERE idx>${user} AND idx<${last} AND (status IS NULL OR status NOT IN (3,4,5,6,7,12)) LIMIT 1) ORDER BY idx LIMIT 67;`;
   const result=await execute('/usr/bin/sqlite3',['-readonly','-json',file,query],{timeout:2000,maxBuffer:512*1024});
   return verifiedTaskEnd(row,execution,JSON.parse(result.stdout||'[]'));
 }

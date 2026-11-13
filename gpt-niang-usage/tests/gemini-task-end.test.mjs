@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
-import {executorMetadata,verifiedTaskEnd,readTaskEnd} from '../runtime/gemini-task-end.mjs';
+import {executorMetadata,verifiedTaskEnd,readTaskEnd,activeDescendantRoots} from '../runtime/gemini-task-end.mjs';
+import {normalizeTrajectorySummaries} from '../runtime/gemini-usage.mjs';
 import {geminiCompletionScan} from '../runtime/gemini-completion-monitor.mjs';
 
 const id='00000000-0000-0000-0000-000000000001',now=Date.parse('2026-11-12T12:00:00Z');
@@ -40,6 +41,45 @@ test('errors, cancellation, chaining, limits and auto-continuation are not norma
 test('waiting, busy state and running children suppress an otherwise valid final record',()=>{
   for(const flags of [{waitingStepCount:1},{notFullyIdle:true},{hasActiveChildren:true},{hasRunningSubagents:true},{interrupted:true},{killed:true},{status:'CASCADE_RUN_STATUS_BUSY'}])assert.equal(verifiedTaskEnd({...row(),...flags},executorMetadata(encodedExec()),steps()),null);
 });
+test('observed AGY idle parent and running browser child are linked without a running-subagent flag',()=>{
+  const childId='00000000-0000-0000-0000-000000000002';
+  const rows=normalizeTrajectorySummaries({trajectorySummaries:{
+    [id]:{status:'CASCADE_RUN_STATUS_IDLE',stepCount:135,lastUserInputStepIndex:86,
+      latestExecutorTerminationReason:'EXECUTOR_TERMINATION_REASON_NO_TOOL_CALL',trajectoryMetadata:{rootConversationId:id}},
+    [childId]:{status:'CASCADE_RUN_STATUS_RUNNING',stepCount:43,
+      latestExecutorTerminationReason:'EXECUTOR_TERMINATION_REASON_NO_TOOL_CALL',
+      trajectoryMetadata:{parentConversationId:id,rootConversationId:id,nestingDepth:1}}
+  }});
+  assert.equal(rows[0].hasRunningSubagents,false);assert.equal(rows[0].notFullyIdle,false);
+  assert.equal(rows[1].parentId,id);assert.equal(rows[1].rootId,id);
+  assert.ok(activeDescendantRoots(rows).has(id));
+});
+test('nested, waiting and busy children block ancestors, including when an intermediate summary is missing',()=>{
+  for(const flags of [{status:'CASCADE_RUN_STATUS_RUNNING'},{status:'CASCADE_RUN_STATUS_BUSY'},
+    {status:'CASCADE_RUN_STATUS_CANCELING'},{status:'CASCADE_RUN_STATUS_UNSPECIFIED'},
+    {notFullyIdle:true},{hasRunningSubagents:true},{waitingStepCount:1}]){
+    const middle={...row(),id:'middle',parentId:id},child={...row(),id:'child',parentId:'middle',rootId:id,...flags};
+    assert.ok(activeDescendantRoots([row(),middle,child]).has(id));
+    assert.ok(activeDescendantRoots([row(),child]).has(id));
+  }
+  assert.ok(activeDescendantRoots([row(),{...row(),id:'child',parentId:id,status:'CASCADE_RUN_STATUS_RUNNING'}]).has(id));
+});
+test('unrelated active conversations and terminal children do not suppress a normal completion',()=>{
+  const other={...row(),id:'other',rootId:'other',status:'CASCADE_RUN_STATUS_RUNNING'};
+  const endedChild={...row(),id:'child',rootId:id,parentId:id,killed:true};
+  assert.equal(activeDescendantRoots([row(),other,endedChild]).has(id),false);
+});
+test('malformed parent cycles terminate and do not block unrelated roots',()=>{
+  const a={...row(),id:'a',parentId:'b',status:'CASCADE_RUN_STATUS_RUNNING'},b={...row(),id:'b',parentId:'a'};
+  const blocked=activeDescendantRoots([a,b,row()]);assert.ok(blocked.has('b'));assert.equal(blocked.has(id),false);
+});
+test('unfinished browser and generic tool steps before the final reply still block completion',()=>{
+  for(const type of [85,132,136])for(const status of [0,1,2,8,9,11,13,null]){
+    assert.equal(verifiedTaskEnd(row(),executorMetadata(encodedExec()),[...steps(),{idx:11,step_type:type,status}]),null);
+  }
+  for(const status of [3,4,5,6,7,12])assert.ok(verifiedTaskEnd(row(),executorMetadata(encodedExec()),[...steps(),{idx:11,step_type:132,status}]));
+  assert.ok(verifiedTaskEnd(row(),executorMetadata(encodedExec()),[...steps(),{idx:9,step_type:132,status:2}]));
+});
 test('generic tools and intermediate notify-user steps are not final answer steps',()=>{
   for(const type of [132,82,81,17]){const values=steps();values[1].step_type=type;assert.equal(verifiedTaskEnd(row(),executorMetadata(encodedExec()),values),null);}
   const values=steps();values[1].step_type=2;
@@ -69,6 +109,20 @@ test('resumed work resets the quiet interval before the final notification',asyn
   await scan();clock+=2000;current={...current,notFullyIdle:true};await scan();clock+=2000;current={...current,notFullyIdle:false};await scan();
   clock+=2000;await scan();assert.equal(found.length,0);clock+=2000;await scan();assert.equal(found.length,1);
 });
+test('running descendants reset the quiet interval; a finished browser permits one final reminder',async()=>{
+  let clock=now,children=[];const found=[],end=verifiedTaskEnd(row(),executorMetadata(encodedExec()),steps());
+  const scan=geminiCompletionScan({now:()=>clock,since:now-10000,readSummaries:async()=>[row(),...children],readEnd:async()=>end,emit:e=>found.push(e)});
+  await scan();clock+=2000;children=[{...row(),id:'browser',depth:1,parentId:id,rootId:id,status:'CASCADE_RUN_STATUS_RUNNING'}];
+  await scan();clock+=4000;await scan();assert.equal(found.length,0);
+  children[0].status='CASCADE_RUN_STATUS_IDLE';await scan();clock+=2000;await scan();assert.equal(found.length,0);
+  clock+=2000;await scan();assert.equal(found.length,1);clock+=4000;await scan();assert.equal(found.length,1);
+});
+test('a linked child without nestingDepth cannot emit its own root completion',async()=>{
+  const found=[],child={...row(),id:'child',parentId:id,rootId:id};
+  const scan=geminiCompletionScan({now:()=>now,since:now-10000,settleMs:0,readSummaries:async()=>[child],
+    readEnd:async()=>verifiedTaskEnd(row(),executorMetadata(encodedExec()),steps()),emit:e=>found.push(e)});
+  await scan();assert.equal(found.length,0);
+});
 test('startup and metadata edits do not replay an already finished input',async()=>{
   const found=[],end=verifiedTaskEnd(row(),executorMetadata(encodedExec()),steps());
   const scan=geminiCompletionScan({now:()=>now,since:now,settleMs:0,readSummaries:async()=>[{...row(),lastModified:now}],readEnd:async()=>end,emit:e=>found.push(e)});
@@ -79,5 +133,14 @@ test('database checks use the newest executor only and reject an oversized newes
   execFileSync('/usr/bin/sqlite3',[file,`CREATE TABLE executor_metadata(idx INTEGER,data BLOB);CREATE TABLE steps(idx INTEGER,step_type INTEGER,status INTEGER,metadata BLOB);INSERT INTO executor_metadata VALUES(0,X'${encodedExec().toString('hex')}');`]);
   for(const step of steps())execFileSync('/usr/bin/sqlite3',[file,`INSERT INTO steps VALUES(${step.idx},${step.step_type},${step.status},X'${step.metadata}');`]);
   assert.ok(await readTaskEnd(row(),{conversationsRoot:root}));
+  // Real observed shape: an earlier GENERIC invocation is RUNNING even though
+  // the latest PLANNER_RESPONSE and executor both look final.
+  execFileSync('/usr/bin/sqlite3',[file,'INSERT INTO steps VALUES(11,132,2,NULL);']);
+  assert.equal(await readTaskEnd(row(),{conversationsRoot:root}),null);
+  execFileSync('/usr/bin/sqlite3',[file,'UPDATE steps SET status=3 WHERE idx=11;']);
+  assert.ok(await readTaskEnd(row(),{conversationsRoot:root}));
+  execFileSync('/usr/bin/sqlite3',[file,'UPDATE steps SET status=NULL WHERE idx=11;']);
+  assert.equal(await readTaskEnd(row(),{conversationsRoot:root}),null);
+  execFileSync('/usr/bin/sqlite3',[file,'UPDATE steps SET status=3 WHERE idx=11;']);
   execFileSync('/usr/bin/sqlite3',[file,'INSERT INTO executor_metadata VALUES(1,zeroblob(131073));']);assert.equal(await readTaskEnd(row(),{conversationsRoot:root}),null);
 });

@@ -37,7 +37,7 @@
 需要 **macOS 13+、Node.js 20+**，以及你要跟随的宿主 App。当前提供的安装包在 Apple Silicon 上构建和验证；Intel 尚未实机验证。
 
 1. 安装 Node.js，例如 `brew install node`。
-2. 从 [Releases](https://github.com/rf-liu/ai-pets/releases/latest) 下载 `ai-pets-v0.2.3-macos-arm64.zip`，核对同页 `SHA256SUMS.txt`。
+2. 从 [Releases](https://github.com/rf-liu/ai-pets/releases/latest) 下载 `ai-pets-v0.2.4-macos-arm64.zip`，核对同页 `SHA256SUMS.txt`。
 3. 解压，将 `GPTNiangMac.app` 放入「应用程序」，**从 Finder 手动打开一次**。这是 AI 桌宠的兼容应用名称。
 4. 打开 Codex / Antigravity / Claude，宠物会跟随相应窗口。DeepSeek 余额需要另外配置[桥接](integrations/README.md)。
 

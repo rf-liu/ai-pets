@@ -100,15 +100,19 @@ export async function readUsage(_unused,{onAccount=()=>{}}={}) {
 // Interface-compatible with the existing, tested writer/refresh queue.
 export const resolveCodexExecutable=value=>value;
 
-export async function trajectorySummaries() {
-  const response=await callRPC('GetAllCascadeTrajectories');
+export function normalizeTrajectorySummaries(response) {
   return Object.entries(response.trajectorySummaries??{}).map(([id,value])=>({
     id,title:String(value.summary??value.annotations?.title??'').split('\n')[0].slice(0,120),status:String(value.status??''),lastModified:Date.parse(value.lastModifiedTime??''),stepCount:Number(value.stepCount??0),
     reason:String(value.latestExecutorTerminationReason??''),depth:Number(value.trajectoryMetadata?.nestingDepth??0),
+    parentId:typeof value.trajectoryMetadata?.parentConversationId==='string'?value.trajectoryMetadata.parentConversationId:null,
+    rootId:typeof value.trajectoryMetadata?.rootConversationId==='string'?value.trajectoryMetadata.rootConversationId:null,
     lastUserInputStepIndex:Number.isSafeInteger(value.lastUserInputStepIndex)?value.lastUserInputStepIndex:null,
     lastUserInputTime:Date.parse(value.lastUserInputTime??''),
     waitingStepCount:Array.isArray(value.waitingSteps)?value.waitingSteps.length:0,
     notFullyIdle:Boolean(value.notFullyIdle),hasActiveChildren:Boolean(value.hasActiveChildren),
     hasRunningSubagents:Boolean(value.hasRunningSubagents),killed:Boolean(value.killed),interrupted:Boolean(value.interrupted)
   }));
+}
+export async function trajectorySummaries() {
+  return normalizeTrajectorySummaries(await callRPC('GetAllCascadeTrajectories'));
 }
