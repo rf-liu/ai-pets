@@ -10,4 +10,13 @@ ditto -c -k --sequesterRsrc --keepParent "$APP" "$ROOT_DIR/dist/$ARCHIVE"
 cd "$ROOT_DIR/dist"
 unzip -tq "$ARCHIVE"
 shasum -a 256 "$ARCHIVE" > SHA256SUMS.txt
+# Keep a verified archive, not another searchable development application.
+# Explicit local debugging can opt in to retaining the uncompressed bundle.
+if [ "${AI_PETS_KEEP_BUNDLE:-0}" != 1 ]; then
+  TASK_LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  if [ -x "$TASK_LSREGISTER" ]; then
+    "$TASK_LSREGISTER" -u "$APP" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$APP"
+fi
 echo "Packaged: $ROOT_DIR/dist/$ARCHIVE"

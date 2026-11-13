@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import Darwin
 
-@MainActor final class UnifiedAppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+@MainActor final class UnifiedAppDelegate: NSObject, NSApplicationDelegate {
     private var companions: [CompanionProfile: CompanionController] = [:]
     private var timer: Timer?
     private var observers: [NSObjectProtocol] = []
@@ -11,6 +11,7 @@ import Darwin
     private var root: URL!
     private var speedWindow: NSWindow?
     private var speedProfile: CompanionProfile = .gpt
+    private let utilityWindows = UtilityWindowCoordinator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let args = ProcessInfo.processInfo.arguments
@@ -29,6 +30,7 @@ import Darwin
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         lockDescriptor = Darwin.open(root.appendingPathComponent("unified.lock").path, O_CREAT | O_RDWR, 0o600)
         guard lockDescriptor >= 0, flock(lockDescriptor, LOCK_EX | LOCK_NB) == 0 else { NSApp.terminate(nil); return }
+        utilityWindows.onChange = { [weak self] in self?.writeStatus() }
         migrateGPTPreferences()
         if previewData != nil {
             if Bundle.main.object(forInfoDictionaryKey: "AICompanionPreviewSpeed") as? Bool == true { showSpeed(.gpt) }
@@ -82,7 +84,8 @@ import Darwin
         let controller = CompanionController(profile: profile, dataDirectory: root.appendingPathComponent(profile.rawValue, isDirectory: true),
             onProfileSelection: { [weak self] profile in self?.showSettings(profile) },
             onSpeedSelection: { [weak self] profile in self?.showSpeed(profile) },
-            isSpeedVisible: { [weak self] in self?.speedWindow?.isVisible == true && self?.speedProfile == profile })
+            isSpeedVisible: { [weak self] in self?.speedWindow?.isVisible == true && self?.speedProfile == profile },
+            utilityWindows: utilityWindows)
         companions[profile] = controller
         controller.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
         controller.syncLoginState()
@@ -94,40 +97,45 @@ import Darwin
                 _ = ensure(profile)
             }
         }
+        writeStatus()
+    }
+    private func writeStatus() {
         let state: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier,
             "profiles": companions.keys.map(\.rawValue).sorted(),
             "hostsRunning": CompanionProfile.allCases.filter { !NSRunningApplication.runningApplications(withBundleIdentifier: $0.hostBundleID).isEmpty }.map(\.rawValue),
-            "loginEnabled": UnifiedStartup.enabled, "at": Date().timeIntervalSince1970]
+            "loginEnabled": UnifiedStartup.enabled, "at": Date().timeIntervalSince1970,
+            "activationPolicy": NSApp.activationPolicy() == .regular ? "regular" : NSApp.activationPolicy() == .accessory ? "accessory" : "prohibited",
+            "visibleUtilityWindows": utilityWindows.visibleCount]
         if let bytes = try? JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]) { try? bytes.write(to: root.appendingPathComponent("unified-status.json"), options: .atomic) }
     }
     private func showSettings(_ profile: CompanionProfile) {
         selected = profile
+        if let window = speedWindow { utilityWindows.hide(window) }
         let frame = companions.values.compactMap(\.visibleSettingsFrame).first
         let controller = ensure(profile)
         companions.values.forEach { $0.hideSettingsWindow() }
         controller.presentSettings(frame: frame)
     }
     private func showSpeed(_ profile: CompanionProfile) {
+        companions.values.forEach { $0.hideSettingsWindow() }
         if speedProfile != profile { companions[speedProfile]?.speedStore.stop() }
         speedProfile = profile
         let controller = ensure(profile)
         if speedWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 726), styleMask: [.titled,.closable,.miniaturizable], backing: .buffered, defer: false)
-            window.isReleasedWhenClosed = false; window.delegate = self; window.center(); speedWindow = window
+            window.isReleasedWhenClosed = false; window.center(); speedWindow = window
         }
         controller.speedStore.start(model: controller.speedModel)
         speedWindow?.title = "AI 聊天速度 · " + profile.title
         speedWindow?.contentView = NSHostingView(rootView: UnifiedThreadSpeedView(profile: profile, store: controller.speedStore, model: controller.speedModel, onSelection: { [weak self] in self?.showSpeed($0) }))
-        NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true); speedWindow?.makeKeyAndOrderFront(nil)
-    }
-    func windowWillClose(_ notification: Notification) {
-        if notification.object as? NSWindow === speedWindow {
-            companions.values.forEach { $0.speedStore.stop() }; NSApp.setActivationPolicy(.accessory)
+        if let window = speedWindow {
+            utilityWindows.present(window, onDismiss: { [weak self] in self?.companions.values.forEach { $0.speedStore.stop() } })
         }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard root != nil else { return false }
         syncHosts()
+        if utilityWindows.focusExistingWindow() || utilityWindows.isDismissing { return false }
         showSettings(selected)
         return false
     }

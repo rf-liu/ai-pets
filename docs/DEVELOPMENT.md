@@ -60,3 +60,11 @@ Node 测试使用本地临时目录、固定记录和 mock 服务，不需要真
 Antigravity 2.29.0 的实际生成元数据含 `stepIndices`，`chatStartMetadata` 中没有可依赖的 `createdAt`。本版经本机 language_server 的 CortexStepMetadata 描述符核对，`finished_generating_at` 是字段 7，类型为 google.protobuf.Timestamp。生成记录与步骤索引关联后只解码这个时间字段；不用 created_at（字段 1）或 completed_at（字段 8）代替，以免混入工具等待或错误归期。
 
 步骤查询仅涉及 `steps.idx` 与有大小限制的 `steps.metadata`，不查询 `step_payload`，不输出元数据原文；时间读取失败时单轮 TPS 仍可显示，但不把无时间样本计入三天平均。
+
+## 本机临时程序清理
+
+验证程序与临时预览仅放系统临时目录或 `.noindex` 子目录，不在 Documents 下长期留下可被系统搜索发现的 `.app` 或测试可执行文件。`bash script/test_window_lifecycle.sh` 会在临时 `.noindex` 目录编译和运行，退出时自动清理。
+
+`bash script/package_release.sh` 验证 ZIP 后默认删除解包的开发 `.app`，只保留安装 ZIP 和校验文件。仅在明确调试时使用 `AI_PETS_KEEP_BUNDLE=1` 临时保留，完成后仍需清理。`build_unified.sh` 的单独构建产物用于明确的开发运行，日常正式应用放在 `/Applications/GPTNiangMac.app`。
+
+旧应用只保留经过校验的压缩备份，不保留可搜索的解包应用；清理只针对本项目拥有、确认未运行的开发产物，不触碰正式应用、宿主、用户配置与源码。

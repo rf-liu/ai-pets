@@ -18,20 +18,23 @@ struct GPTNiangEntry {
 }
 
 @MainActor
-final class CompanionController: NSObject, NSWindowDelegate, NSMenuDelegate {
+final class CompanionController: NSObject, NSMenuDelegate {
     let profile: CompanionProfile
     private let profileDataDirectory: URL
     private let onProfileSelection: (CompanionProfile) -> Void
     private let onSpeedSelection: (CompanionProfile) -> Void
     private let isSpeedVisible: () -> Bool
+    private let utilityWindows: UtilityWindowCoordinator
     init(profile: CompanionProfile, dataDirectory: URL, onProfileSelection: @escaping (CompanionProfile) -> Void,
-         onSpeedSelection: @escaping (CompanionProfile) -> Void, isSpeedVisible: @escaping () -> Bool) {
+         onSpeedSelection: @escaping (CompanionProfile) -> Void, isSpeedVisible: @escaping () -> Bool,
+         utilityWindows: UtilityWindowCoordinator) {
         self.profile = profile; self.profileDataDirectory = dataDirectory; self.onProfileSelection = onProfileSelection
         self.onSpeedSelection = onSpeedSelection; self.isSpeedVisible = isSpeedVisible
+        self.utilityWindows = utilityWindows
         super.init()
     }
     var visibleSettingsFrame: NSRect? { settingsWindow?.isVisible == true ? settingsWindow?.frame : nil }
-    func hideSettingsWindow() { settingsWindow?.orderOut(nil) }
+    func hideSettingsWindow() { if let window = settingsWindow { utilityWindows.hide(window) } }
     func syncLoginState() { model?.loginRequested = UnifiedStartup.enabled; model?.savePreferences() }
     private var model: WidgetModel!
     private var completion: CompletionNotificationController!
@@ -163,11 +166,6 @@ final class CompanionController: NSObject, NSWindowDelegate, NSMenuDelegate {
         }
     }
     func menuDidClose(_ menu: NSMenu) { trackingMenus = max(0, trackingMenus - 1) }
-    func windowWillClose(_ notification: Notification) {
-        if let window = notification.object as? NSWindow {
-            if window === settingsWindow { NSApp.setActivationPolicy(.accessory) }
-        }
-    }
     private func localizeWindowTitles() {
         panel?.title = profile.petName + "额度挂件"
         settingsWindow?.title = profile.petName + "设置"
@@ -222,13 +220,12 @@ final class CompanionController: NSObject, NSWindowDelegate, NSMenuDelegate {
     func presentSettings(frame: NSRect? = nil) {
         if settingsWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 620), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-            window.title = profile.petName + "设置"; window.isReleasedWhenClosed = false; window.delegate = self
+            window.title = profile.petName + "设置"; window.isReleasedWhenClosed = false
             window.center(); settingsWindow = window
         }
         settingsWindow?.contentView = NSHostingView(rootView: SettingsView(model: model, onProfileSelection: onProfileSelection))
-        NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true)
         if let frame { settingsWindow?.setFrame(frame, display: false) }
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        if let window = settingsWindow { utilityWindows.present(window) }
     }
     @objc private func showSpeed() {
         onSpeedSelection(profile)

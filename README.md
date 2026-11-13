@@ -30,14 +30,14 @@
 
 回复完成时用开心表情提醒。点击本体返回对应窗口；Codex 优先打开经过校验的对话，无法定位时只打开宿主 App。返回后的微笑保留约 1.5 秒。气泡和图片透明区域都可以穿透点击。
 
-右键本体可打开设置或聊天速度。速度窗口有四个 AI 标签，显示真实对话名与分模型最近平均速度。
+右键本体可打开设置或聊天速度。速度与设置共用一套窗口管理，切换时收起另一页面；点红色关闭最后一个工具窗后会自动隐藏 Dock 图标，宠物与后台继续运行。速度窗口有四个 AI 标签，显示真实对话名与分模型最近平均速度。
 
 ## 安装
 
 需要 **macOS 13+、Node.js 20+**，以及你要跟随的宿主 App。当前提供的安装包在 Apple Silicon 上构建和验证；Intel 尚未实机验证。
 
 1. 安装 Node.js，例如 `brew install node`。
-2. 从 [Releases](https://github.com/rf-liu/ai-pets/releases/latest) 下载 `ai-pets-v0.2.2-macos-arm64.zip`，核对同页 `SHA256SUMS.txt`。
+2. 从 [Releases](https://github.com/rf-liu/ai-pets/releases/latest) 下载 `ai-pets-v0.2.3-macos-arm64.zip`，核对同页 `SHA256SUMS.txt`。
 3. 解压，将 `GPTNiangMac.app` 放入「应用程序」，**从 Finder 手动打开一次**。这是 AI 桌宠的兼容应用名称。
 4. 打开 Codex / Antigravity / Claude，宠物会跟随相应窗口。DeepSeek 余额需要另外配置[桥接](integrations/README.md)。
 
