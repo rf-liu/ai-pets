@@ -24,6 +24,15 @@ export function createHostCheck(profile, {
   readProcesses = () => execute('/bin/ps', ['-axo', 'uid=,pid=,comm='], {timeout: 1500, maxBuffer: 4 * 1024 * 1024}),
   now = Date.now, uid = process.getuid?.(), ttl = 5000
 } = {}) {
+  if(process.env.AI_PETS_HOST_STDIN==='1'){
+    let active=process.env.AI_PETS_HOST_ACTIVE==='1',pending='';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data',chunk=>{
+      pending+=chunk;if(pending.length>4096){pending='';return;}
+      let end;while((end=pending.indexOf('\n'))>=0){const line=pending.slice(0,end);pending=pending.slice(end+1);try{const value=JSON.parse(line);if(value.type==='host')active=value.active===true;}catch{}}
+    });
+    return async()=>active;
+  }
   let checkedAt = -Infinity, previous = false;
   return async () => {
     let desktopKnown = false;

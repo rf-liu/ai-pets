@@ -17,7 +17,7 @@ export function processAlive(pid) {
 export function healthyWorker(dataDir,now=Date.now()) {
   const status=readJson(path.join(dataDir,'worker-status.json'));
   const owner=readJson(path.join(dataDir,'worker.lock'));
-  return status && owner && status.token===owner.token && status.pid===owner.pid && now-status.at>=0 && now-status.at<5000 && processAlive(status.pid) && (!status.parentPid || processAlive(status.parentPid))?status:null;
+  return status && owner && status.token===owner.token && status.pid===owner.pid && (status.transport==='stdio' && status.parentPid>0 || now-status.at>=0 && now-status.at<5000) && processAlive(status.pid) && (!status.parentPid || processAlive(status.parentPid))?status:null;
 }
 
 export function workerEndpoint(dataDir){

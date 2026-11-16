@@ -3,6 +3,9 @@ import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {AdaptivePoller,createHostCheck,bindMonitorLifetime} from './host-activity.mjs';
 import {fullyIdle,readTaskEnd,activeDescendantRoots} from './gemini-task-end.mjs';
+import {ChangeGate} from './change-gate.mjs';
+import os from 'node:os';
+import path from 'node:path';
 export function geminiCompletionScan({readSummaries=trajectorySummaries,readEnd=readTaskEnd,
   emit=event=>process.stdout.write(JSON.stringify(event)+'\n'),now=Date.now,since=now(),settleMs=3000}={}){
   const pending=new Map(),emitted=new Set();
@@ -30,6 +33,13 @@ export function geminiCompletionScan({readSummaries=trajectorySummaries,readEnd=
   };
 }
 if(process.argv[1]&&fileURLToPath(import.meta.url)===process.argv[1]){
-  const poller=new AdaptivePoller({checkActive:createHostCheck('gemini'),work:geminiCompletionScan(),onOrphan:()=>process.exit(0)});
+  const gate=new ChangeGate([path.join(os.homedir(),'.gemini/antigravity/conversations')]);
+  let rows=null;const ends=new Map();
+  const readSummaries=async()=>{
+    if(gate.consume()||rows===null){try{rows=await trajectorySummaries();ends.clear();}catch(error){gate.mark();throw error;}}
+    return rows;
+  };
+  const readEnd=async row=>{if(!ends.has(row.id))ends.set(row.id,await readTaskEnd(row));return ends.get(row.id);};
+  const poller=new AdaptivePoller({checkActive:createHostCheck('gemini'),work:geminiCompletionScan({readSummaries,readEnd}),onPause:()=>{gate.mark();rows=null;ends.clear();},onOrphan:()=>process.exit(0)});
   bindMonitorLifetime(poller);void poller.start();
 }

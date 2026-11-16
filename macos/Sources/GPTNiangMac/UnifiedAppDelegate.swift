@@ -11,6 +11,7 @@ import Darwin
     private var root: URL!
     private var speedWindow: NSWindow?
     private var speedProfile: CompanionProfile = .gpt
+    private var lastStatusState: Data?
     private let utilityWindows = UtilityWindowCoordinator()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -100,13 +101,18 @@ import Darwin
         writeStatus()
     }
     private func writeStatus() {
-        let state: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier,
+        var state: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier,
             "profiles": companions.keys.map(\.rawValue).sorted(),
             "hostsRunning": CompanionProfile.allCases.filter { !NSRunningApplication.runningApplications(withBundleIdentifier: $0.hostBundleID).isEmpty }.map(\.rawValue),
-            "loginEnabled": UnifiedStartup.enabled, "at": Date().timeIntervalSince1970,
+            "loginEnabled": UnifiedStartup.enabled,
             "activationPolicy": NSApp.activationPolicy() == .regular ? "regular" : NSApp.activationPolicy() == .accessory ? "accessory" : "prohibited",
             "visibleUtilityWindows": utilityWindows.visibleCount]
-        if let bytes = try? JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]) { try? bytes.write(to: root.appendingPathComponent("unified-status.json"), options: .atomic) }
+        guard let signature = try? JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]), signature != lastStatusState else { return }
+        state["at"] = Date().timeIntervalSince1970
+        if let bytes = try? JSONSerialization.data(withJSONObject: state, options: [.sortedKeys]) {
+            do { try bytes.write(to: root.appendingPathComponent("unified-status.json"), options: .atomic); lastStatusState = signature }
+            catch { }
+        }
     }
     private func showSettings(_ profile: CompanionProfile) {
         selected = profile

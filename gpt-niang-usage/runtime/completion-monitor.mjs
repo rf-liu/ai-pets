@@ -158,6 +158,8 @@ export class CompletionMonitor {
     this.pollerOptions=pollerOptions;
     this.discoveredFiles=[];this.lastDiscovery=-Infinity;this.discoveryDirty=true;
     this.targetResolver=new CompletionTargetResolver(codexHome);
+    this.eventDriven=process.env.AI_PETS_HOST_STDIN==='1';this.contentDirty=true;this.savedEnded=null;
+    this.changedFiles=new Set();
   }
   start(){
     if(this.poller)return;
@@ -172,22 +174,27 @@ export class CompletionMonitor {
     // Keep `since` across sleeping/waking. A delayed first poll must not baseline
     // away a short turn which finished after this process was started.
     this.poller=new AdaptivePoller({...this.pollerOptions,checkActive:this.hostCheck,activeMs:this.intervalMs,
-      work:()=>this.scan(false),onPause:()=>{try{this.scan(false);}finally{this.closeWatchers();this.discoveryDirty=true;}},
+      work:()=>{if(!this.eventDriven||this.contentDirty||this.discoveryDirty)this.scan(false);},onPause:()=>{this.contentDirty=true;},
       onOrphan:()=>process.exit(0)});
     return this.poller.start();
   }
   persistState(force=false){
     if(!this.stateFile)return;
     const now=Date.now();
-    if(!force && now-this.lastStateSave<5000)return;
-    this.lastStateSave=now;saveMonitorState(this.stateFile,now,this.lastEnded);
+    if(this.eventDriven&&!force&&this.savedEnded===this.lastEnded)return;
+    if(!force && !this.eventDriven && now-this.lastStateSave<5000)return;
+    this.lastStateSave=now;this.savedEnded=this.lastEnded;saveMonitorState(this.stateFile,now,this.lastEnded);
   }
   scan(baseline=false,now=Date.now()){
-    if(baseline||this.discoveryDirty||now<this.lastDiscovery||now-this.lastDiscovery>=this.discoveryMs){
+    this.contentDirty=false;
+    const discover=baseline||this.discoveryDirty||now<this.lastDiscovery||!this.eventDriven&&now-this.lastDiscovery>=this.discoveryMs;
+    if(discover){
       this.discoveredFiles=listRolloutFiles(this.codexHome);this.lastDiscovery=now;this.discoveryDirty=false;
       this.watchRoots();
     }
-    const files=this.discoveredFiles,present=new Set();
+    const files=this.eventDriven&&!discover&&this.changedFiles.size?this.discoveredFiles.filter(file=>this.changedFiles.has(file)):this.discoveredFiles;
+    this.changedFiles.clear();
+    const present=new Set(this.discoveredFiles.map(file=>path.basename(file)));
     for(const file of files){
       const sessionId=path.basename(file);present.add(sessionId);
       const subagent=this.subagentSessions.get(sessionId);
@@ -273,8 +280,8 @@ export class CompletionMonitor {
     for(const name of ['sessions','archived_sessions']){
       const root=path.join(this.codexHome,name);if(this.watchers.has(root))continue;
       try{
-        const watcher=fs.watch(root,{recursive:true},type=>{if(type==='rename')this.discoveryDirty=true;});
-        watcher.on('error',()=>{watcher.close();this.watchers.delete(root);});this.watchers.set(root,watcher);
+        const watcher=fs.watch(root,{recursive:true},(type,name)=>{this.contentDirty=true;if(name)this.changedFiles.add(path.resolve(root,String(name)));if(type==='rename')this.discoveryDirty=true;});
+        watcher.on('error',()=>{watcher.close();this.watchers.delete(root);if(this.eventDriven)process.exit(1);});this.watchers.set(root,watcher);
       }catch{}
     }
   }

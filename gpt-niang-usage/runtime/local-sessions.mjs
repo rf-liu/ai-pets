@@ -5,6 +5,7 @@ import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {estimateMessageCost} from './deepseek-cost.mjs';
 import {RecentSpeedSamples} from './recent-speed.mjs';
+import {StringDecoder} from 'node:string_decoder';
 const caches=new Map();
 const number=x=>typeof x==='number'&&Number.isFinite(x)&&x>=0;
 const at=x=>typeof x==='number'?x:Date.parse(x??'');
@@ -93,17 +94,37 @@ export class DshTurnParser {
   }
  }
 }
+export class DshFileTail {
+ constructor(file){this.file=file;this.offset=0;this.identity=null;this.parser=new DshTurnParser();this.pending='';this.decoder=new StringDecoder('utf8');this.skip=false;}
+ update(){
+  const stat=fs.statSync(this.file),identity=stat.dev+':'+stat.ino;
+  if(identity!==this.identity||stat.size<this.offset){
+   this.identity=identity;this.offset=Math.max(0,stat.size-8*1024*1024);this.parser=new DshTurnParser();this.pending='';this.decoder=new StringDecoder('utf8');this.skip=this.offset>0;this.parser.recent.partial=this.skip;
+  }
+  const count=Math.min(stat.size-this.offset,8*1024*1024);if(count<=0)return this.parser;
+  const buffer=Buffer.alloc(count),fd=fs.openSync(this.file,'r');let read;
+  try{read=fs.readSync(fd,buffer,0,count,this.offset);}finally{fs.closeSync(fd);}this.offset+=read;
+  const lines=(this.pending+this.decoder.write(buffer.subarray(0,read))).split('\n');this.pending=lines.pop();
+  if(this.skip&&lines.length){lines.shift();this.skip=false;}
+  for(const line of lines){if(!line||line.length>2*1024*1024)continue;try{this.parser.accept(JSON.parse(line));}catch{}}
+  if(this.pending.length>2*1024*1024){this.pending='';this.skip=true;}
+  return this.parser;
+ }
+}
 export function readDshSessions(){
  const root=path.join(os.homedir(),'.dsh/sessions'),paths=files(root,4).filter(x=>x.endsWith('.jsonl')||x.endsWith('.jsonl.zstd')).sort((a,b)=>fs.statSync(b).mtimeMs-fs.statSync(a).mtimeMs).slice(0,24);const rows=[],ids=new Set();
  for(const file of paths){
   try{
    const stat=fs.statSync(file),key='dsh:'+file,prior=caches.get(key);let parser=prior?.parser;
+   if(!file.endsWith('.zstd')){
+    const tail=prior?.tail??new DshFileTail(file);parser=tail.update();caches.set(key,{mtime:stat.mtimeMs,size:stat.size,parser,tail});
+   }else{
    if(!prior||prior.mtime!==stat.mtimeMs||prior.size!==stat.size){
     let text;
     if(file.endsWith('.zstd')){const binary=['/opt/homebrew/bin/zstd','/usr/local/bin/zstd'].find(fs.existsSync);if(!binary)continue;const result=spawnSync(binary,['-q','-dc',file],{encoding:'utf8',timeout:4000,maxBuffer:64*1024*1024});if(result.status!==0)continue;text=result.stdout;}
-    else {if(stat.size>64*1024*1024)continue;text=fs.readFileSync(file,'utf8');}
     parser=new DshTurnParser();for(const line of text.split('\n')){if(!line||line.length>2*1024*1024)continue;try{parser.accept(JSON.parse(line));}catch{}}
     caches.set(key,{mtime:stat.mtimeMs,size:stat.size,parser});
+   }
    }
    if(!parser?.id||parser.depth>0||ids.has(parser.id))continue;ids.add(parser.id);
    rows.push({id:rowID('dsh',parser.id),title:String(parser.title||'DeepSeek Harness 对话').slice(0,160),state:parser.active&&Date.now()-parser.lastAt<300000?'running':'idle',tokensPerSecond:null,sampleAt:null,outputTokens:null,intervalSeconds:null,...parser.latest,...parser.recent.snapshot(),_costRecords:parser.costRecords,unavailableReason:parser.latest?null:'等待一轮 Harness 回复完成并返回有效计数。'});

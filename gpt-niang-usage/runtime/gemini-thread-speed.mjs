@@ -2,15 +2,19 @@ import {trajectorySummaries} from './gemini-usage.mjs';
 import {readGenerationSpeed} from './gemini-generation-speed.mjs';
 import {createHash} from 'node:crypto';
 import {RecentSpeedSamples} from './recent-speed.mjs';
+import {ChangeGate} from './change-gate.mjs';
+import path from 'node:path';
+import os from 'node:os';
+const gate=new ChangeGate([path.join(os.homedir(),'.gemini/antigravity/conversations')]);
 let busy=false;const caches=new Map();
 async function tick(){
-  if(busy)return;busy=true;
+  if(busy||!gate.consume())return;busy=true;
   try{
     const rows=(await trajectorySummaries()).filter(x=>x.depth===0).sort((a,b)=>b.lastModified-a.lastModified).slice(0,12),threads=[];
     for(const [index,row] of rows.entries()){
       const cache=caches.get(row.id)??{history:new RecentSpeedSamples()};caches.set(row.id,cache);
       const now=Date.now(),revision=String(row.lastModified)+':'+row.stepCount;
-      if(row.status==='CASCADE_RUN_STATUS_RUNNING'||cache.revision!==revision||now-(cache.fetchedAt??0)>=60000){
+      if(row.status==='CASCADE_RUN_STATUS_RUNNING'||cache.revision!==revision){
         cache.fetchedAt=now;cache.revision=revision;
         try{cache.sample=await readGenerationSpeed(row.id,{history:cache.history});cache.error=null;}
         catch{cache.error=cache.sample?'本地记录暂时不可读，显示上次生成统计。':'本地生成记录暂时不可读，正在重试。';cache.revision=null;}

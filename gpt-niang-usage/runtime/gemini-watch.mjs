@@ -8,6 +8,10 @@ import {readPendingRequests,completeRequests,cleanRefreshResults} from './refres
 import {createPipeRefreshHandler} from './worker-ipc.mjs';
 import {pluginVersion} from './metadata.mjs';
 
+import {runGuiWorker} from './gui-worker.mjs';
+if(process.env.AI_PETS_GUI_STDIO==='1'){
+  await runGuiWorker({readUsage,resolveCodexExecutable,pluginVersion});
+}else{
 const config=readJson(process.argv[2]);
 if(!config?.dataDir || !config?.codexPath)throw new Error('Invalid widget installation configuration');
 const parentPid=Number(process.argv[3]??0);
@@ -98,3 +102,5 @@ heartbeat=setInterval(()=>{
   cleanRefreshResults(config.dataDir,now);
   try{health();}catch{}
 },1000);
+
+}

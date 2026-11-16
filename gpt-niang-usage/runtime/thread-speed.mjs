@@ -4,6 +4,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {displayThreadName,isUserConversation,userThreadsSQL} from './speed-titles.mjs';
 import {RecentSpeedSamples} from './recent-speed.mjs';
+import {ChangeGate} from './change-gate.mjs';
 
 // Completed request output includes reasoning. Duration includes first-token,
 // tools, network and approval waits. No prompts or message bodies are emitted.
@@ -134,8 +135,11 @@ export function allowedRollout(file, codexHome) {
 function run() {
   const codexHome = process.env.CODEX_HOME || path.join(process.env.HOME || '', '.codex');
   const tails = new Map();
+  const gate = new ChangeGate([path.join(codexHome,'sessions'),path.join(codexHome,'archived_sessions'),
+    ...fs.readdirSync(codexHome).filter(name=>/^state_\d+\.sqlite(?:-wal|-shm)?$/.test(name)).map(name=>path.join(codexHome,name))]);
   const send = value => process.stdout.write(JSON.stringify(value) + '\n');
   function update() {
+    if(!gate.consume())return;
     try {
       const databases = fs.readdirSync(codexHome).filter(name => /^state_\d+\.sqlite$/.test(name))
         .sort((a, b) => Number(b.match(/\d+/)[0]) - Number(a.match(/\d+/)[0]));

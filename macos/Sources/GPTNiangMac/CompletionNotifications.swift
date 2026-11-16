@@ -63,6 +63,7 @@ final class CompletionNotificationController {
     private var output: Pipe?
     private var nextStart: TimeInterval = 0
     private var lastPoll: TimeInterval = 0
+    private var lastHostActive: Bool?
     private var wasEnabled = false
     private var originalLayer: OriginalLayer?
     private var closingUntil: TimeInterval = 0
@@ -126,11 +127,14 @@ final class CompletionNotificationController {
         process.environment = ProcessInfo.processInfo.environment
         process.environment?["AI_PETS_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         process.environment?["AI_PETS_HOST_STATE_FILE"] = model.dataDirectory.deletingLastPathComponent().appendingPathComponent("unified-status.json").path
+        let hostActive = !NSRunningApplication.runningApplications(withBundleIdentifier: model.profile.hostBundleID).isEmpty
+        process.environment?["AI_PETS_HOST_STDIN"] = "1"
+        process.environment?["AI_PETS_HOST_ACTIVE"] = hostActive ? "1" : "0"
         stdout.fileHandleForReading.readabilityHandler = { handle in
             let bytes = handle.availableData
             if bytes.isEmpty { handle.readabilityHandler = nil; return }; queue.append(bytes, token: token)
         }
-        do { try process.run(); monitor = process; input = stdin; output = stdout }
+        do { try process.run(); monitor = process; input = stdin; output = stdout; lastHostActive = hostActive }
         catch { stdout.fileHandleForReading.readabilityHandler = nil; inbox.invalidate(); try? stdin.fileHandleForWriting.close() }
     }
     private func stopMonitor() {
@@ -140,6 +144,7 @@ final class CompletionNotificationController {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { if process.isRunning { process.terminate() } }
         }
         monitor = nil; input = nil; output = nil
+        lastHostActive = nil
     }
 
     func tick(codexFrontmost: Bool, busy: Bool, now: TimeInterval = Date().timeIntervalSince1970) {
@@ -152,6 +157,12 @@ final class CompletionNotificationController {
             lastPoll = now
             for notice in inbox.drain() { receiveCompletion(conversationID: notice.conversationId, title: notice.conversationTitle, endedAt: notice.endedAt, cost: notice.estimatedCost) }
             startMonitor(now: now)
+            let active = !NSRunningApplication.runningApplications(withBundleIdentifier: model.profile.hostBundleID).isEmpty
+            if lastHostActive != active, let handle = input?.fileHandleForWriting,
+               var bytes = try? JSONSerialization.data(withJSONObject: ["type": "host", "active": active]) {
+                bytes.append(10)
+                do { try handle.write(contentsOf: bytes); lastHostActive = active } catch { }
+            }
         }
         if let surface = state.surface {
             // Mouse-down belongs to this notification. Keep it alive until

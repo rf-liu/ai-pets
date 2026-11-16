@@ -110,6 +110,11 @@ final class WidgetModel: ObservableObject {
     static let dsRapidExpressions = CompanionProfile.dsExpressions.map { $0.id } + ["smile-gentle", "smile-playful"]
     let defaults: UserDefaults
     private var worker: Process?
+    private var workerInput: Pipe?
+    private var workerOutput: Pipe?
+    private let workerInbox = BackendPipeInbox()
+    private var lastPipeHeartbeat: TimeInterval?
+    private var lastPipePresence: String?
     private var lastWorkerStart = -Double.infinity
     private var lastWorkerCheck: TimeInterval?
     private var workerUnhealthySince: TimeInterval?
@@ -191,20 +196,27 @@ final class WidgetModel: ObservableObject {
     func stop() {
         timer?.invalidate(); timer = nil; audio.stop()
         writePresence(visible: false)
+        closeWorkerPipes()
         if let worker, worker.isRunning { worker.terminate() }; worker = nil
         try? stderr?.close(); stderr = nil
     }
     func tick(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         guard profile.quotaEnabled else { return }
-        let file = dataDirectory.appendingPathComponent("status.json")
-        if let data = try? Data(contentsOf: file) {
-            readSnapshot(data)
-        } else if lastStatusData != nil {
-            lastStatusData = nil; snapshot = UsageSnapshot(error: text("正在讀取目前帳戶的額度…"))
+        if workerInput != nil {
+            for bytes in workerInbox.drain() {
+                guard let value = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { continue }
+                if value["type"] as? String == "health", let pid = value["pid"] as? Int32, pid == worker?.processIdentifier { lastPipeHeartbeat = now }
+                else if value["type"] as? String == "snapshot", let next = value["snapshot"] as? [String: Any], let data = try? JSONSerialization.data(withJSONObject: next, options: [.sortedKeys]) { readSnapshot(data) }
+                else if value["type"] as? String == "error" { refreshing = false }
+            }
+        } else {
+            let file = dataDirectory.appendingPathComponent("status.json")
+            if let data = try? Data(contentsOf: file) { readSnapshot(data) }
+            else if lastStatusData != nil { lastStatusData = nil; snapshot = UsageSnapshot(error: text("正在讀取目前帳戶的額度…")) }
         }
         if Date() > refreshUntil { refreshing = false }
         guard settleWorkerHandoff() else { return }
-        if let request = readStopRequest(), request != initialStopRequest {
+        if (workerInput == nil || worker?.isRunning != true), let request = readStopRequest(), request != initialStopRequest {
             if let worker, worker.isRunning { worker.terminate() }
             return
         }
@@ -255,11 +267,11 @@ final class WidgetModel: ObservableObject {
         lastWorkerCheck = now.isFinite ? now : nil
         if !(gap.map { $0 >= 0 && $0 <= 3 } ?? false) { workerUnhealthySince = nil }
         guard now.isFinite else { return }
-        if let status = liveWorker(owner: try? workerRecord("worker.lock"),
+        let pipeHealthy = workerInput != nil && lastPipeHeartbeat.map { now >= $0 && now - $0 < 5 } == true
+        let fileHealthy = workerInput == nil && liveWorker(owner: try? workerRecord("worker.lock"),
                                    status: try? workerRecord("worker-status.json"),
-                                   isAlive: { kill($0, 0) == 0 || errno == EPERM }),
-           status.pid == worker.processIdentifier, status.parentPid == getpid(),
-           freshWorker(status, now: Date()) {
+                                   isAlive: { kill($0, 0) == 0 || errno == EPERM }).map { $0.pid == worker.processIdentifier && $0.parentPid == getpid() && freshWorker($0, now: Date()) } == true
+        if pipeHealthy || fileHealthy {
             // Query success, busy state and bundle version do not define liveness.
             workerReportedHeartbeat = true; workerUnhealthySince = nil
             workerRecoveryAvailable = true
@@ -363,6 +375,7 @@ final class WidgetModel: ObservableObject {
         guard now >= lastWorkerStart + 5 else { return }
         lastWorkerStart = now
         worker = nil
+        closeWorkerPipes()
         lastWorkerCheck = nil; workerUnhealthySince = nil; workerReportedHeartbeat = false
         workerRecoveryPending = false
         try? stderr?.close(); stderr = nil
@@ -383,14 +396,24 @@ final class WidgetModel: ObservableObject {
             try Data().write(to: log, options: .atomic)
             stderr = try FileHandle(forWritingTo: log)
             let process = Process()
+            let stdio = FileManager.default.fileExists(atPath: backend.appendingPathComponent("runtime/gui-worker.mjs").path)
             process.executableURL = node
             process.arguments = [backend.appendingPathComponent("runtime/" + profile.workerScript).path, configURL.path, String(ProcessInfo.processInfo.processIdentifier), "--inherit-stop"]
-            process.standardInput = FileHandle.nullDevice; process.standardOutput = FileHandle.nullDevice
+            let input = Pipe(), output = Pipe(), inbox = workerInbox, token = inbox.reset()
+            process.standardInput = stdio ? input : FileHandle.nullDevice
+            process.standardOutput = stdio ? output : FileHandle.nullDevice
+            if stdio { output.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                if data.isEmpty { handle.readabilityHandler = nil; return }
+                inbox.append(data, token: token)
+            } }
             process.standardError = stderr
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = [node.deletingLastPathComponent().path, "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin", env["PATH"] ?? ""].joined(separator: ":")
+            if stdio { env["AI_PETS_GUI_STDIO"] = "1" }
             process.environment = env
             try process.run(); worker = process
+            if stdio { workerInput = input; workerOutput = output; lastPipeHeartbeat = nil; lastPipePresence = nil }
             lastWorkerCheck = now; workerUnhealthySince = now
             logger.info("Quota worker started")
         } catch { snapshot = UsageSnapshot(error: text("額度背景程序無法啟動：%@", String(describing: error.localizedDescription))) }
@@ -417,6 +440,13 @@ final class WidgetModel: ObservableObject {
         hideBubble(); savePreferences()
     }
     func writePresence(visible: Bool) {
+        guard profile.quotaEnabled else { return }
+        if workerInput != nil {
+            let quotaVisible = visible && bubble && message == nil && !isCompletionMessage
+            let key = "\(visible):\(quotaVisible)"
+            if lastPipePresence != key, sendWorker(["type": "presence", "visible": visible, "quotaVisible": quotaVisible]) { lastPipePresence = key }
+            return
+        }
         try? writeJSON(["visible": visible, "at": Date().timeIntervalSince1970 * 1000,
                         "pid": ProcessInfo.processInfo.processIdentifier], to: dataDirectory.appendingPathComponent("presence.json"))
     }
@@ -613,7 +643,19 @@ final class WidgetModel: ObservableObject {
         if bubble { showQuote() } else { showQuota() }
     }
     private func requestRefreshFlag() {
+        if workerInput != nil, sendWorker(["type": "refresh"]) { return }
         try? Data(UUID().uuidString.utf8).write(to: dataDirectory.appendingPathComponent("refresh.flag"), options: .atomic)
+    }
+    private func sendWorker(_ message: [String: Any]) -> Bool {
+        guard worker?.isRunning == true, let handle = workerInput?.fileHandleForWriting,
+              var bytes = try? JSONSerialization.data(withJSONObject: message) else { return false }
+        bytes.append(10)
+        do { try handle.write(contentsOf: bytes); return true } catch { return false }
+    }
+    private func closeWorkerPipes() {
+        _ = workerInbox.reset(); workerOutput?.fileHandleForReading.readabilityHandler = nil
+        try? workerInput?.fileHandleForWriting.close(); try? workerOutput?.fileHandleForReading.close()
+        workerInput = nil; workerOutput = nil; lastPipeHeartbeat = nil; lastPipePresence = nil
     }
     func showQuote() {
         onManualBubble?(); isCompletionMessage = false
