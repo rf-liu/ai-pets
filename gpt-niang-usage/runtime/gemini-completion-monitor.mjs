@@ -33,10 +33,10 @@ export function geminiCompletionScan({readSummaries=trajectorySummaries,readEnd=
   };
 }
 if(process.argv[1]&&fileURLToPath(import.meta.url)===process.argv[1]){
-  const gate=new ChangeGate([path.join(os.homedir(),'.gemini/antigravity/conversations')]);
+  const gate=new ChangeGate([path.join(os.homedir(),'.gemini/antigravity/conversations')],{settleMs:4000});
   let rows=null;const ends=new Map();
   const readSummaries=async()=>{
-    if(gate.consume()||rows===null){try{rows=await trajectorySummaries();ends.clear();}catch(error){gate.mark();throw error;}}
+    if(gate.consume()||rows===null){try{rows=await trajectorySummaries();ends.clear();}catch(error){rows=[];ends.clear();throw error;}}
     return rows;
   };
   const readEnd=async row=>{if(!ends.has(row.id))ends.set(row.id,await readTaskEnd(row));return ends.get(row.id);};

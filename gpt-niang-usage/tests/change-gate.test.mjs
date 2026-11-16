@@ -20,3 +20,10 @@ test('unrelated sibling changes do not read a missing provider root; its creatio
  fs.writeFileSync(path.join(root,'other'),'unrelated');await pause(100);assert.equal(gate.consume(),false);
  fs.mkdirSync(provider);await pause(100);assert.equal(gate.consume(),true);
 });
+test('host status settling gets one bounded follow-up and never turns into idle polling',t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'pet-settle-'));let now=0;
+ const gate=new ChangeGate([root],{settleMs:4000,now:()=>now});t.after(()=>{gate.close();fs.rmSync(root,{recursive:true,force:true});});
+ assert.equal(gate.consume(),true);now=3999;assert.equal(gate.consume(),false);now=4000;assert.equal(gate.consume(),true);
+ for(let i=0;i<600;i++){now+=2000;assert.equal(gate.consume(),false);}
+ gate.mark();assert.equal(gate.consume(),true);now+=4000;assert.equal(gate.consume(),true);now+=4000;assert.equal(gate.consume(),false);
+});

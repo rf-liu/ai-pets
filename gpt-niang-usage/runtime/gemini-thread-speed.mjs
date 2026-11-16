@@ -5,7 +5,7 @@ import {RecentSpeedSamples} from './recent-speed.mjs';
 import {ChangeGate} from './change-gate.mjs';
 import path from 'node:path';
 import os from 'node:os';
-const gate=new ChangeGate([path.join(os.homedir(),'.gemini/antigravity/conversations')]);
+const gate=new ChangeGate([path.join(os.homedir(),'.gemini/antigravity/conversations')],{settleMs:4000});
 let busy=false;const caches=new Map();
 async function tick(){
   if(busy||!gate.consume())return;busy=true;
