@@ -7,6 +7,15 @@ import {estimateMessageCost} from './deepseek-cost.mjs';
 import {RecentSpeedSamples} from './recent-speed.mjs';
 import {StringDecoder} from 'node:string_decoder';
 const caches=new Map();
+const metadataCache=new Map();
+function cachedMetadata(file){
+ const stat=fs.statSync(file,{bigint:true}),signature=stat.dev+':'+stat.ino+':'+stat.size+':'+stat.mtimeNs+':'+stat.ctimeNs;
+ const previous=metadataCache.get(file);if(previous?.signature===signature)return previous.data;
+ if(stat.size>512*1024)return null;
+ const data=JSON.parse(fs.readFileSync(file,'utf8'));metadataCache.set(file,{signature,data});
+ while(metadataCache.size>4096)metadataCache.delete(metadataCache.keys().next().value);
+ return data;
+}
 const number=x=>typeof x==='number'&&Number.isFinite(x)&&x>=0;
 const at=x=>typeof x==='number'?x:Date.parse(x??'');
 function files(root,depth=4){
@@ -55,7 +64,7 @@ class ClaudeTail {
 }
 export function readClaudeSessions(){
  const root=path.join(os.homedir(),'Library/Application Support/Claude/claude-code-sessions');
- const metadata=files(root,3).filter(x=>path.basename(x).startsWith('local_')&&x.endsWith('.json')).map(file=>{try{const data=JSON.parse(fs.readFileSync(file,'utf8'));return {...data,_file:file};}catch{return null;}}).filter(x=>x&&!x.isArchived&&x.cliSessionId).sort((a,b)=>(at(b.lastActivityAt)||0)-(at(a.lastActivityAt)||0)).slice(0,12);
+ const metadata=files(root,3).filter(x=>path.basename(x).startsWith('local_')&&x.endsWith('.json')).map(file=>{try{const data=cachedMetadata(file);return data?{...data,_file:file}:null;}catch{return null;}}).filter(x=>x&&!x.isArchived&&x.cliSessionId).sort((a,b)=>(at(b.lastActivityAt)||0)-(at(a.lastActivityAt)||0)).slice(0,12);
  const lookup=new Map(files(path.join(os.homedir(),'.claude/projects'),1).filter(x=>x.endsWith('.jsonl')).map(x=>[path.basename(x,'.jsonl'),x]));
  const rows=metadata.map(meta=>{
   const row={id:rowID('claude',meta.cliSessionId),title:String(meta.title||'Claude Code 对话').slice(0,160),state:'idle',tokensPerSecond:null,modelName:typeof meta.model==='string'?meta.model:'Claude',sampleAt:null,outputTokens:null,intervalSeconds:null};
@@ -100,6 +109,12 @@ export class DshFileTail {
   const stat=fs.statSync(this.file),identity=stat.dev+':'+stat.ino;
   if(identity!==this.identity||stat.size<this.offset){
    this.identity=identity;this.offset=Math.max(0,stat.size-8*1024*1024);this.parser=new DshTurnParser();this.pending='';this.decoder=new StringDecoder('utf8');this.skip=this.offset>0;this.parser.recent.partial=this.skip;
+   if(this.skip){
+    const fd=fs.openSync(this.file,'r');try{
+     const header=Buffer.alloc(64*1024),count=fs.readSync(fd,header,0,header.length,0),end=header.subarray(0,count).indexOf(10);
+     if(end>=0){const record=JSON.parse(header.subarray(0,end).toString('utf8'));if(record.type==='session')this.parser.accept(record);}
+    }catch{}finally{fs.closeSync(fd);}
+   }
   }
   const count=Math.min(stat.size-this.offset,8*1024*1024);if(count<=0)return this.parser;
   const buffer=Buffer.alloc(count),fd=fs.openSync(this.file,'r');let read;
@@ -134,4 +149,4 @@ export function readDshSessions(){
  return rows.sort((a,b)=>(b.sampleAt??0)-(a.sampleAt??0)).slice(0,12);
 }
 export function readLocalSessions(profile){return profile==='claude'?readClaudeSessions():readDshSessions();}
-export function clearLocalSessionCaches(profile){for(const key of caches.keys())if(key.startsWith((profile==='claude'?'claude':'dsh')+':'))caches.delete(key);}
+export function clearLocalSessionCaches(profile){for(const key of caches.keys())if(key.startsWith((profile==='claude'?'claude':'dsh')+':'))caches.delete(key);if(profile==='claude')metadataCache.clear();}

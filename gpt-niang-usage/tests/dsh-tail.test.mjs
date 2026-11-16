@@ -20,3 +20,10 @@ test('DS split UTF-8 records are decoded once after the newline arrives',t=>{
  const split=bytes.indexOf(Buffer.from('鲸'))+1;fs.writeFileSync(file,bytes.subarray(0,split));const tail=new DshFileTail(file);tail.update();
  fs.appendFileSync(file,bytes.subarray(split));assert.equal(tail.update().title,'鲸鱼');
 });
+test('bounded history retains session identity from its header when only the last 8 MiB is read',t=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'pet-dsh-large-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const file=path.join(root,'session.jsonl');fs.writeFileSync(file,JSON.stringify({type:'session',id:'large-session',delegationDepth:0})+'\n');
+ const fd=fs.openSync(file,'a');for(let i=0;i<9;i++)fs.writeSync(fd,Buffer.alloc(1024*1024,10));fs.closeSync(fd);
+ fs.appendFileSync(file,JSON.stringify({type:'session/title',time:2,data:{title:'retained'}})+'\n');
+ const parsed=new DshFileTail(file).update();assert.equal(parsed.id,'large-session');assert.equal(parsed.title,'retained');assert.equal(parsed.recent.partial,true);
+});
