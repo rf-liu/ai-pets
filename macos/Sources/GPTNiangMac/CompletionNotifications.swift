@@ -127,7 +127,7 @@ final class CompletionNotificationController {
         process.environment = ProcessInfo.processInfo.environment
         process.environment?["AI_PETS_PARENT_PID"] = String(ProcessInfo.processInfo.processIdentifier)
         process.environment?["AI_PETS_HOST_STATE_FILE"] = model.dataDirectory.deletingLastPathComponent().appendingPathComponent("unified-status.json").path
-        let hostActive = !NSRunningApplication.runningApplications(withBundleIdentifier: model.profile.hostBundleID).isEmpty
+        let hostActive = WorkspaceSnapshot.shared.application(bundleID: model.profile.hostBundleID) != nil
         process.environment?["AI_PETS_HOST_STDIN"] = "1"
         process.environment?["AI_PETS_HOST_ACTIVE"] = hostActive ? "1" : "0"
         stdout.fileHandleForReading.readabilityHandler = { handle in
@@ -157,7 +157,7 @@ final class CompletionNotificationController {
             lastPoll = now
             for notice in inbox.drain() { receiveCompletion(conversationID: notice.conversationId, title: notice.conversationTitle, endedAt: notice.endedAt, cost: notice.estimatedCost) }
             startMonitor(now: now)
-            let active = !NSRunningApplication.runningApplications(withBundleIdentifier: model.profile.hostBundleID).isEmpty
+            let active = WorkspaceSnapshot.shared.application(bundleID: model.profile.hostBundleID) != nil
             if lastHostActive != active, let handle = input?.fileHandleForWriting,
                var bytes = try? JSONSerialization.data(withJSONObject: ["type": "host", "active": active]) {
                 bytes.append(10)
@@ -176,7 +176,7 @@ final class CompletionNotificationController {
                 if codexFrontmost { dismiss(); return }
                 if let old = originalLayer, old.fullscreen, now - lastFullscreenCheck >= 0.25 {
                     lastFullscreenCheck = now
-                    if NSWorkspace.shared.frontmostApplication?.processIdentifier != old.foregroundPID || !foregroundFullscreen() { dismiss() }
+                    if WorkspaceSnapshot.shared.frontmost?.processIdentifier != old.foregroundPID || !foregroundFullscreen() { dismiss() }
                 }
             } else if !codexFrontmost || !mainPanel.isVisible {
                 model.hideCompletion(); state.pause(); closingUntil = now + 0.55
@@ -191,7 +191,7 @@ final class CompletionNotificationController {
         } else {
             originalLayer = OriginalLayer(level: mainPanel.level, visible: mainPanel.isVisible,
                 ignoresMouse: mainPanel.ignoresMouseEvents, fullscreen: foregroundFullscreen(),
-                foregroundPID: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+                foregroundPID: WorkspaceSnapshot.shared.frontmost?.processIdentifier)
             // Reuse the original panel at its existing frame; never save a temporary position.
             if !(mainPanel is WidgetPanel) { mainPanel.ignoresMouseEvents = false }
             mainPanel.level = .floating; mainPanel.orderFrontRegardless()
@@ -200,11 +200,11 @@ final class CompletionNotificationController {
         (mainPanel as? WidgetPanel)?.updatePointerCapture()
     }
     private func foregroundFullscreen() -> Bool {
-        guard let app = NSWorkspace.shared.frontmostApplication,
+        guard let app = WorkspaceSnapshot.shared.frontmost,
               let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]],
               let item = windows.first(where: { ($0[kCGWindowOwnerPID as String] as? Int32) == app.processIdentifier && ($0[kCGWindowLayer as String] as? Int) == 0 }),
               let b = item[kCGWindowBounds as String] as? [String: CGFloat] else { return false }
-        let rect = WidgetPlacement.appKitRect(quartz: CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0), mainDisplayHeight: CGDisplayBounds(CGMainDisplayID()).height)
-        return NSScreen.screens.contains { rect.insetBy(dx: -1, dy: -1).contains($0.frame) }
+        let rect = WidgetPlacement.appKitRect(quartz: CGRect(x: b["X"] ?? 0, y: b["Y"] ?? 0, width: b["Width"] ?? 0, height: b["Height"] ?? 0), mainDisplayHeight: WorkspaceSnapshot.shared.mainDisplayHeight)
+        return WorkspaceSnapshot.shared.screens.contains { rect.insetBy(dx: -1, dy: -1).contains($0.frame) }
     }
 }

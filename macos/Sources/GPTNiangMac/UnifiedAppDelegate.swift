@@ -94,7 +94,7 @@ import Darwin
     }
     private func syncHosts() {
         for profile in CompanionProfile.allCases {
-            if NSRunningApplication.runningApplications(withBundleIdentifier: profile.hostBundleID).contains(where: { !$0.isTerminated }) {
+            if WorkspaceSnapshot.shared.application(bundleID: profile.hostBundleID) != nil {
                 _ = ensure(profile)
             }
         }
@@ -103,7 +103,7 @@ import Darwin
     private func writeStatus() {
         var state: [String: Any] = ["pid": ProcessInfo.processInfo.processIdentifier,
             "profiles": companions.keys.map(\.rawValue).sorted(),
-            "hostsRunning": CompanionProfile.allCases.filter { !NSRunningApplication.runningApplications(withBundleIdentifier: $0.hostBundleID).isEmpty }.map(\.rawValue),
+            "hostsRunning": CompanionProfile.allCases.filter { WorkspaceSnapshot.shared.application(bundleID: $0.hostBundleID) != nil }.map(\.rawValue),
             "loginEnabled": UnifiedStartup.enabled,
             "activationPolicy": NSApp.activationPolicy() == .regular ? "regular" : NSApp.activationPolicy() == .accessory ? "accessory" : "prohibited",
             "visibleUtilityWindows": utilityWindows.visibleCount]

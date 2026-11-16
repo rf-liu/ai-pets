@@ -137,7 +137,7 @@ final class CompanionController: NSObject, NSMenuDelegate {
     private func revealDesktopWidget() {
         guard !model.followCodex else { return }
         let mouse = NSEvent.mouseLocation
-        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main else { return }
+        guard let screen = WorkspaceSnapshot.shared.screens.first(where: { $0.frame.contains(mouse) }) ?? NSScreen.main else { return }
         let area = screen.visibleFrame
         let side = 378 * min(model.scale, area.width / 378, area.height / 378)
         model.desktopLeft = area.midX - side / 2
@@ -248,7 +248,7 @@ final class CompanionController: NSObject, NSMenuDelegate {
         NotificationCenter.default.addObserver(self, selector: #selector(spaceChanged(_:)), name: NSApplication.didChangeScreenParametersNotification, object: nil)
     }
     private func recordFocusDisplay() {
-        focusDisplay.recordInteraction(at: NSEvent.mouseLocation, screens: NSScreen.screens.map(\.frame))
+        focusDisplay.recordInteraction(at: NSEvent.mouseLocation, screens: WorkspaceSnapshot.shared.screens.map(\.frame))
         forceHostDiscovery = true
     }
     private func readStageManager() {
@@ -298,10 +298,10 @@ final class CompanionController: NSObject, NSMenuDelegate {
             forceHostDiscovery = false
             if forced { readStageManager() }
             if forced || hostApplication == nil || hostApplication?.isTerminated == true {
-                hostApplication = NSRunningApplication.runningApplications(withBundleIdentifier: profile.hostBundleID).first
+                hostApplication = WorkspaceSnapshot.shared.application(bundleID: profile.hostBundleID)
             }
         }
-        let activeApp = NSWorkspace.shared.frontmostApplication
+        let activeApp = WorkspaceSnapshot.shared.frontmost
         let companionActive = activeApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier && (model.interactionActive || model.bubble || settingsWindow?.isVisible == true || isSpeedVisible())
         guard let app = hostApplication, !app.isTerminated, !app.isHidden else { return nil }
         let dragging = frontmost && (NSEvent.pressedMouseButtons & 1) != 0
@@ -310,7 +310,7 @@ final class CompanionController: NSObject, NSMenuDelegate {
         else if let number = selectedHostNumber { windows = WindowSnapshotCache.shared.window(number, now: now, foreground: frontmost, dragging: dragging) }
         else { windows = nil }
         guard let windows else { return nil }
-        let screens = NSScreen.screens.map(\.frame)
+        let screens = WorkspaceSnapshot.shared.screens.map(\.frame)
         if discover {
             var frontmostFrame: CGRect?
             for window in windows {
@@ -319,7 +319,7 @@ final class CompanionController: NSObject, NSMenuDelegate {
                       let bounds = window[kCGWindowBounds as String] as? [String: CGFloat],
                       let width = bounds["Width"], let height = bounds["Height"], width >= 200, height >= 120 else { continue }
                 let frame = WidgetPlacement.appKitRect(quartz: CGRect(x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0,
-                    width: width, height: height), mainDisplayHeight: CGDisplayBounds(CGMainDisplayID()).height)
+                    width: width, height: height), mainDisplayHeight: WorkspaceSnapshot.shared.mainDisplayHeight)
                 if WindowFollowPolicy.screen(for: frame, screens: screens) != nil {
                     frontmostFrame = frame; break
                 }
@@ -334,7 +334,7 @@ final class CompanionController: NSObject, NSMenuDelegate {
                   let width = bounds["Width"], let height = bounds["Height"], width >= 480, height >= 300,
                   let number = window[kCGWindowNumber as String] as? Int else { continue }
             let quartz = CGRect(x: bounds["X"] ?? 0, y: bounds["Y"] ?? 0, width: width, height: height)
-            let frame = WidgetPlacement.appKitRect(quartz: quartz, mainDisplayHeight: CGDisplayBounds(CGMainDisplayID()).height)
+            let frame = WidgetPlacement.appKitRect(quartz: quartz, mainDisplayHeight: WorkspaceSnapshot.shared.mainDisplayHeight)
             let mouseDraggingHost = frontmost && (NSEvent.pressedMouseButtons & 1) != 0
             guard WindowFollowPolicy.usableHost(frame, screens: screens,
                 allowClipped: mouseDraggingHost || hostGeometry.isTracking(number: number)) else { continue }
@@ -369,7 +369,7 @@ final class CompanionController: NSObject, NSMenuDelegate {
         defer { panel.updatePointerCapture() }
         model.updateCharacterExpression()
         if completion.temporaryTopmost {
-            let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == profile.hostBundleID
+            let front = WorkspaceSnapshot.shared.frontmost?.bundleIdentifier == profile.hostBundleID
             let busy = trackingMenus > 0 || dragOrigin != nil || (model.interactionActive && !model.isCompletionMessage) || model.audio.busy || settingsWindow?.isVisible == true || isSpeedVisible() || (model.bubble && !model.isCompletionMessage)
             completion.tick(codexFrontmost: front, busy: busy)
             if completion.temporaryTopmost {
@@ -389,11 +389,11 @@ final class CompanionController: NSObject, NSMenuDelegate {
         previousFollow = model.followCodex
         var size = CGSize(width: 378 * model.scale, height: 378 * model.scale)
         let now = ProcessInfo.processInfo.systemUptime
-        let codexFrontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == profile.hostBundleID
+        let codexFrontmost = WorkspaceSnapshot.shared.frontmost?.bundleIdentifier == profile.hostBundleID
         let host = model.followCodex ? codexWindow(now: now, frontmost: codexFrontmost) : nil
         var visible = false
         if model.followCodex {
-            let companionActive = NSWorkspace.shared.frontmostApplication?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            let companionActive = WorkspaceSnapshot.shared.frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier
             let level = WindowFollowPolicy.level(hostActive: codexFrontmost, companionActive: companionActive)
             if panel.level != level { panel.level = level; needsHostOrder = true }
             if let (rect, number) = host {
@@ -425,7 +425,7 @@ final class CompanionController: NSObject, NSMenuDelegate {
             let levelChanged = panel.level != level
             panel.level = level
             let point = CGPoint(x: model.desktopLeft ?? panel.placementFrame.minX, y: model.desktopBottom ?? panel.placementFrame.minY)
-            let screen = NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.screens.min {
+            let screen = WorkspaceSnapshot.shared.screens.first { $0.frame.contains(point) } ?? WorkspaceSnapshot.shared.screens.min {
                 hypot($0.frame.midX-point.x, $0.frame.midY-point.y) < hypot($1.frame.midX-point.x, $1.frame.midY-point.y)
             } ?? NSScreen.main!
             let area = screen.visibleFrame
@@ -480,7 +480,7 @@ final class CompanionController: NSObject, NSMenuDelegate {
         let proposed = CGPoint(x: origin.x + translation.width, y: origin.y - translation.height)
         if !model.followCodex {
             let center = CGPoint(x: proposed.x+panel.placementFrame.width/2, y: proposed.y+panel.placementFrame.height/2)
-            let screen = NSScreen.screens.first { $0.frame.contains(center) } ?? NSScreen.screens.min {
+            let screen = WorkspaceSnapshot.shared.screens.first { $0.frame.contains(center) } ?? WorkspaceSnapshot.shared.screens.min {
                 hypot($0.frame.midX-center.x, $0.frame.midY-center.y) < hypot($1.frame.midX-center.x, $1.frame.midY-center.y)
             }
             guard let area = screen?.visibleFrame else { return }
