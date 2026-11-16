@@ -292,19 +292,24 @@ final class CompanionController: NSObject, NSMenuDelegate {
         }
     }
     private func codexWindow(now: TimeInterval, frontmost: Bool) -> (CGRect, Int)? {
-        let discover = cadence.discover(now: now, force: forceHostDiscovery || (frontmost && !wasCodexFrontmost))
+        let forced = forceHostDiscovery || (frontmost && !wasCodexFrontmost)
+        let discover = cadence.discover(now: now, force: forced)
         if discover {
             forceHostDiscovery = false
-            readStageManager()
-            hostApplication = NSRunningApplication.runningApplications(withBundleIdentifier: profile.hostBundleID).first
+            if forced { readStageManager() }
+            if forced || hostApplication == nil || hostApplication?.isTerminated == true {
+                hostApplication = NSRunningApplication.runningApplications(withBundleIdentifier: profile.hostBundleID).first
+            }
         }
         let activeApp = NSWorkspace.shared.frontmostApplication
         let companionActive = activeApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier && (model.interactionActive || model.bubble || settingsWindow?.isVisible == true || isSpeedVisible())
         guard let app = hostApplication, !app.isTerminated, !app.isHidden else { return nil }
-        let options: CGWindowListOption = discover ? [.optionOnScreenOnly, .excludeDesktopElements] : [.optionIncludingWindow]
-        let windowID: CGWindowID? = discover ? kCGNullWindowID : selectedHostNumber.map { CGWindowID($0) }
-        guard let windowID,
-              let windows = CGWindowListCopyWindowInfo(options, windowID) as? [[String: Any]] else { return nil }
+        let dragging = frontmost && (NSEvent.pressedMouseButtons & 1) != 0
+        let windows: [[String: Any]]?
+        if discover { windows = WindowSnapshotCache.shared.full(now: now, force: forced) }
+        else if let number = selectedHostNumber { windows = WindowSnapshotCache.shared.window(number, now: now, foreground: frontmost, dragging: dragging) }
+        else { windows = nil }
+        guard let windows else { return nil }
         let screens = NSScreen.screens.map(\.frame)
         if discover {
             var frontmostFrame: CGRect?

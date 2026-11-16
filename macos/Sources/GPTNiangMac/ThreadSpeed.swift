@@ -11,7 +11,6 @@ final class ThreadSpeedStore: ObservableObject {
     private var process: Process?
     private var output: Pipe?
     private var input: Pipe?
-    private var pending = Data()
     private var generation = 0
     func start(model: WidgetModel) {
         language = model.language
@@ -25,6 +24,8 @@ final class ThreadSpeedStore: ObservableObject {
         generation += 1
         let current = generation
         let task = Process(), output = Pipe(), input = Pipe()
+        let frames = BackendPipeInbox(), token = frames.reset()
+        let decodeQueue = DispatchQueue(label: "AIQuotaPets.speed.decode", qos: .utility)
         task.executableURL = executable
         task.arguments = arguments
         task.standardOutput = output; task.standardError = FileHandle.nullDevice; task.standardInput = input
@@ -32,22 +33,24 @@ final class ThreadSpeedStore: ObservableObject {
             let data = handle.availableData
             guard !data.isEmpty else {
                 handle.readabilityHandler = nil
-                Task { @MainActor in self?.ended(current) }
+                decodeQueue.async { [weak self] in Task { @MainActor [weak self] in self?.ended(current) } }
                 return
             }
-            Task { @MainActor in if self?.generation == current { self?.consume(data) } }
+            decodeQueue.async { [weak self] in
+                frames.append(data, token: token)
+                var latest: ThreadSpeedResponse?
+                for line in frames.drain() {
+                    if let decoded = try? JSONDecoder().decode(ThreadSpeedResponse.self, from: line) { latest = decoded }
+                }
+                if let latest { Task { @MainActor [weak self] in
+                    guard self?.generation == current else { return }
+                    self?.rows = latest.threads; self?.error = latest.error
+                } }
+            }
         }
         task.terminationHandler = { [weak self] _ in Task { @MainActor in self?.ended(current) } }
         do { try task.run(); process = task; self.output = output; self.input = input }
         catch { self.error = language.text("聊天速度面板無法啟動：%@", String(describing: error.localizedDescription)); output.fileHandleForReading.readabilityHandler = nil }
-    }
-    private func consume(_ data: Data) {
-        pending.append(data)
-        if pending.count > 512 * 1024 { pending.removeAll(); return }
-        while let end = pending.firstIndex(of: 10) {
-            let line = pending[..<end]; pending.removeSubrange(...end)
-            if let response = try? JSONDecoder().decode(ThreadSpeedResponse.self, from: line) { rows = response.threads; error = response.error }
-        }
     }
     private func ended(_ current: Int) {
         guard generation == current else { return }
@@ -57,7 +60,7 @@ final class ThreadSpeedStore: ObservableObject {
         generation += 1
         output?.fileHandleForReading.readabilityHandler = nil
         try? input?.fileHandleForWriting.close()
-        if process?.isRunning == true { process?.terminate() }; process = nil; output = nil; input = nil; pending.removeAll()
+        if process?.isRunning == true { process?.terminate() }; process = nil; output = nil; input = nil
     }
 }
 struct ThreadSpeedView: View {
@@ -72,7 +75,7 @@ struct ThreadSpeedView: View {
                 Text("Claude 桌面版的 Code 对话 · 普通 Chat / Cowork 暂无可读的本地 token 计数")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            Text(model.text(model.profile == .gemini ? "按最近一次模型生成的輸出總 tokens（已含思考）÷（首 token 等待 + 流式生成時間）計算。每 3 秒讀取本機統計，不會自動發送測速消息。" : "按最近完成的一輪回覆的總輸出 tokens（正文 + 思考）÷整輪耗時計算，包含首字、工具、網路與確認等待。每 3 秒讀取本機統計，不會自動發送測速消息。"))
+            Text(model.text(model.profile == .gemini ? "按最近一次模型生成的輸出總 tokens（已含思考）÷（首 token 等待 + 流式生成時間）計算。本機記錄有變化時更新，不會自動發送測速消息。" : "按最近完成的一輪回覆的總輸出 tokens（正文 + 思考）÷整輪耗時計算，包含首字、工具、網路與確認等待。本機記錄有變化時更新，不會自動發送測速消息。"))
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if model.profile == .gemini {
                 Text(model.text("包含中間模型調用的生成輸出；不含工具或程式執行等待。"))
