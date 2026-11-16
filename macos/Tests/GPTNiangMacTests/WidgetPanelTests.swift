@@ -15,6 +15,29 @@ final class WidgetPanelTests: XCTestCase {
         return (panel, content)
     }
 
+    func testFractionalScaleDoesNotReapplyRoundedGeometryEveryFrame() {
+        let (panel, _) = self.panel(); defer { panel.close() }
+        let desired = CGRect(x: 100.2, y: 100.7, width: 378 * 0.6, height: 378 * 0.6)
+        for _ in 0..<600 { XCTAssertTrue(panel.place(desired, clippedTo: nil)) }
+        XCTAssertEqual(panel.windowGeometryWrites, 1)
+        XCTAssertEqual(panel.contentGeometryWrites, 1)
+        XCTAssertEqual(panel.placementFrame, desired)
+        panel.setFrame(panel.frame.offsetBy(dx: 12, dy: 0), display: false)
+        XCTAssertTrue(panel.place(desired, clippedTo: nil))
+        XCTAssertEqual(panel.windowGeometryWrites, 2, "A genuine external move is still corrected")
+    }
+
+    func testNewSubpixelDragRequestsAreAppliedWithoutLosingLogicalCoordinates() {
+        let (panel, _) = self.panel(); defer { panel.close() }
+        let initial = CGRect(x: 100.2, y: 100.7, width: 226.8, height: 226.8)
+        for i in 0..<10 {
+            let desired = initial.offsetBy(dx: Double(i) / 10, dy: 0)
+            XCTAssertTrue(panel.place(desired, clippedTo: nil))
+            XCTAssertEqual(panel.placementFrame, desired)
+        }
+        XCTAssertEqual(panel.windowGeometryWrites, 10)
+    }
+
     func testCroppedWindowKeepsFullCanvasAndScreenCoordinates() {
         let (panel, content) = self.panel(); defer { panel.close() }
         let desired = CGRect(x: 100, y: 100, width: 378, height: 378)

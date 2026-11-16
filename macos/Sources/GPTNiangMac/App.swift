@@ -50,7 +50,8 @@ final class CompanionController: NSObject, NSMenuDelegate {
     private var hostRect: CGRect?
     private var lastHostNumber: Int?
     private var selectedHostNumber: Int?
-    private var hostApplication: NSRunningApplication?
+    private let runtimeProbe = ProcessInfo.processInfo.arguments.contains("--probe-runtime")
+    private let ownProcessID = ProcessInfo.processInfo.processIdentifier
     private var cadence = WindowFollowCadence()
     private var wasCodexFrontmost = false
     private var followPolicy = WindowFollowPolicy()
@@ -297,13 +298,10 @@ final class CompanionController: NSObject, NSMenuDelegate {
         if discover {
             forceHostDiscovery = false
             if forced { readStageManager() }
-            if forced || hostApplication == nil || hostApplication?.isTerminated == true {
-                hostApplication = WorkspaceSnapshot.shared.application(bundleID: profile.hostBundleID)
-            }
         }
         let activeApp = WorkspaceSnapshot.shared.frontmost
-        let companionActive = activeApp?.processIdentifier == ProcessInfo.processInfo.processIdentifier && (model.interactionActive || model.bubble || settingsWindow?.isVisible == true || isSpeedVisible())
-        guard let app = hostApplication, !app.isTerminated, !app.isHidden else { return nil }
+        let companionActive = activeApp?.processIdentifier == ownProcessID && (model.interactionActive || model.bubble || settingsWindow?.isVisible == true || isSpeedVisible())
+        guard let app = WorkspaceSnapshot.shared.application(bundleID: profile.hostBundleID), !app.isHidden else { return nil }
         let dragging = frontmost && (NSEvent.pressedMouseButtons & 1) != 0
         let windows: [[String: Any]]?
         if discover { windows = WindowSnapshotCache.shared.full(now: now, force: forced) }
@@ -361,7 +359,7 @@ final class CompanionController: NSObject, NSMenuDelegate {
     }
     private func updateWindow() {
         guard model != nil, panel != nil else { return }
-        if ProcessInfo.processInfo.arguments.contains("--probe-runtime") {
+        if runtimeProbe {
             let now = ProcessInfo.processInfo.systemUptime
             if cadence.presence(now: now, visible: false) { model.writePresence(visible: false) }
             return
@@ -393,7 +391,7 @@ final class CompanionController: NSObject, NSMenuDelegate {
         let host = model.followCodex ? codexWindow(now: now, frontmost: codexFrontmost) : nil
         var visible = false
         if model.followCodex {
-            let companionActive = WorkspaceSnapshot.shared.frontmost?.processIdentifier == ProcessInfo.processInfo.processIdentifier
+            let companionActive = WorkspaceSnapshot.shared.frontmost?.processIdentifier == ownProcessID
             let level = WindowFollowPolicy.level(hostActive: codexFrontmost, companionActive: companionActive)
             if panel.level != level { panel.level = level; needsHostOrder = true }
             if let (rect, number) = host {

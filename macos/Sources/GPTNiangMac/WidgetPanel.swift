@@ -12,6 +12,10 @@ final class WidgetPanel: NSPanel {
     private weak var hitModel: WidgetModel?
     private var hitMap: WidgetHitMap?
     private var hitImage: NSImage?
+    private var requestedViewport: CGRect?
+    private var requestedContent: CGRect?
+    private(set) var windowGeometryWrites = 0
+    private(set) var contentGeometryWrites = 0
     var placementFrame: CGRect { savedPlacement ?? frame }
 
     func configurePointerCapture(model: WidgetModel) {
@@ -46,6 +50,7 @@ final class WidgetPanel: NSPanel {
         viewport.layer?.masksToBounds = true
         content.autoresizingMask = []
         canvas = content
+        requestedViewport = nil; requestedContent = nil
         contentView = viewport
         content.frame = viewport.bounds
         viewport.addSubview(content)
@@ -57,11 +62,22 @@ final class WidgetPanel: NSPanel {
         guard let visible = WidgetPlacement.viewport(frame: desired, host: host),
               let canvas else { orderOut(nil); return false }
         savedPlacement = desired
-        if frame != visible { setFrame(visible, display: false) }
+        // AppKit can round a fractional scale to a device pixel. Reissuing
+        // that same logical frame every tick otherwise triggers fresh layout.
+        let tolerance = 1 / max(1, backingScaleFactor)
+        if requestedViewport != visible || !Self.near(frame, visible, tolerance: tolerance) {
+            windowGeometryWrites += 1; setFrame(visible, display: false); requestedViewport = visible
+        }
         let contentFrame = CGRect(x: desired.minX - visible.minX,
                                   y: desired.minY - visible.minY,
                                   width: desired.width, height: desired.height)
-        if canvas.frame != contentFrame { canvas.frame = contentFrame }
+        if requestedContent != contentFrame || !Self.near(canvas.frame, contentFrame, tolerance: tolerance) {
+            contentGeometryWrites += 1; canvas.frame = contentFrame; requestedContent = contentFrame
+        }
         return true
+    }
+    private static func near(_ a: CGRect, _ b: CGRect, tolerance: CGFloat) -> Bool {
+        abs(a.minX-b.minX) <= tolerance && abs(a.minY-b.minY) <= tolerance &&
+        abs(a.width-b.width) <= tolerance && abs(a.height-b.height) <= tolerance
     }
 }

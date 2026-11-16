@@ -4,10 +4,20 @@ import AppKit
 // refresh them instead of querying LaunchServices and NSScreen every frame.
 @MainActor final class WorkspaceSnapshot {
     static let shared = WorkspaceSnapshot()
-    private(set) var frontmost: NSRunningApplication?
+    struct ApplicationState {
+        let processIdentifier: Int32
+        let bundleIdentifier: String?
+        let isHidden: Bool
+        let isTerminated: Bool
+        init(_ app: NSRunningApplication) {
+            processIdentifier = app.processIdentifier; bundleIdentifier = app.bundleIdentifier
+            isHidden = app.isHidden; isTerminated = app.isTerminated
+        }
+    }
+    private(set) var frontmost: ApplicationState?
     private(set) var screens: [NSScreen] = []
     private(set) var mainDisplayHeight: CGFloat = 0
-    private var applications: [String: NSRunningApplication] = [:]
+    private var applications: [String: ApplicationState] = [:]
     private let frontmostProvider: () -> NSRunningApplication?
     private let runningProvider: () -> [NSRunningApplication]
     private let screensProvider: () -> [NSScreen]
@@ -20,7 +30,7 @@ import AppKit
         refresh()
         guard observe else { return }
         let center = NSWorkspace.shared.notificationCenter
-        for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
+        for name in [NSWorkspace.didActivateApplicationNotification, NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification, NSWorkspace.didHideApplicationNotification, NSWorkspace.didUnhideApplicationNotification] {
             observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.refreshApplications() }
             })
@@ -29,14 +39,15 @@ import AppKit
             Task { @MainActor in self?.refreshScreens() }
         })
     }
-    func application(bundleID: String) -> NSRunningApplication? {
+    func application(bundleID: String) -> ApplicationState? {
         guard let app = applications[bundleID], !app.isTerminated else { return nil }
         return app
     }
     func refresh() { refreshApplications(); refreshScreens() }
     private func refreshApplications() {
-        frontmost = frontmostProvider(); applications.removeAll(keepingCapacity: true)
-        for app in runningProvider() { if let id = app.bundleIdentifier { applications[id] = app } }
+        frontmost = frontmostProvider().map(ApplicationState.init); applications.removeAll(keepingCapacity: true)
+        let hosts = Set(CompanionProfile.allCases.map(\.hostBundleID))
+        for app in runningProvider() { if let id = app.bundleIdentifier, hosts.contains(id) { applications[id] = ApplicationState(app) } }
     }
     private func refreshScreens() {
         screens = screensProvider(); mainDisplayHeight = CGDisplayBounds(CGMainDisplayID()).height
