@@ -43,9 +43,9 @@ test('stopping during an in-flight request cannot resurrect a timer',async()=>{
 test('late first scan after wake does not reset the startup boundary or duplicate completions',()=>{
   let now=10000,rows=[],found=[];
   const scan=localCompletionScan('claude',{now:()=>now,readSessions:()=>rows,emit:e=>found.push(e)});
-  rows=[{id:'chat',sampleAt:12000,title:'fixture'}];now=15000;scan();scan();assert.equal(found.length,1);
-  now=30000;rows=[{id:'chat',sampleAt:29000,title:'fixture'}];scan();assert.equal(found.length,2);
-  rows=[{id:'future',sampleAt:40000}];scan();assert.equal(found.length,2);
+  rows=[{id:'chat',state:'idle',sampleAt:12000,_completionAt:12000,title:'fixture'}];now=15000;scan();scan();assert.equal(found.length,1);
+  now=30000;rows=[{id:'chat',state:'idle',sampleAt:29000,_completionAt:29000,title:'fixture'}];scan();assert.equal(found.length,2);
+  rows=[{id:'future',state:'idle',sampleAt:40000,_completionAt:40000}];scan();assert.equal(found.length,2);
 });
 test('temporary Gemini RPC failures preserve a running transition without repeated notifications',async()=>{
   let phase=0,found=[];

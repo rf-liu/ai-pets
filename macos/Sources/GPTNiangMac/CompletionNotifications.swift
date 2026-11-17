@@ -5,8 +5,8 @@ import GPTNiangCore
 private struct CompletionNotice: Decodable {
     let type: String
     let sessionId: String
-    let turnId: String
-    let endedAt: Double
+    let turnId: String?
+    let endedAt: Double?
     let conversationId: String?
     let conversationTitle: String?
     let estimatedCost: Double?
@@ -31,7 +31,8 @@ private final class CompletionInbox: @unchecked Sendable {
         for byte in data {
             if byte == 10 {
                 if !discarding, let notice = try? JSONDecoder().decode(CompletionNotice.self, from: pending),
-                   notice.type == "completion", !notice.sessionId.isEmpty, !notice.turnId.isEmpty, notice.endedAt.isFinite {
+                   !notice.sessionId.isEmpty,
+                   notice.type == "activity" || notice.type == "completion" && notice.turnId?.isEmpty == false && notice.endedAt?.isFinite == true {
                     if notices.count == 64 { notices.removeFirst() }; notices.append(notice)
                 }
                 pending.removeAll(keepingCapacity: true); discarding = false
@@ -72,15 +73,19 @@ final class CompletionNotificationController {
     private var destinationEndedAt: Double = 0
     private var destinationTitle: String?
     private var destinationCost: Double?
+    private var destinationSessionID: String?
     private var presentedDestination: CompletionDestination?
     private var presentedEndedAt: Double = 0
+    private var presentedSessionID: String?
+    private var seenCompletions = Set<String>()
+    private var seenOrder: [String] = []
     private let openDestination: (CompletionDestination) -> Void
     var temporaryTopmost: Bool { originalLayer != nil }
     init(model: WidgetModel, panel: NSPanel, openDestination: ((CompletionDestination) -> Void)? = nil) {
         self.model = model; mainPanel = panel
         self.openDestination = openDestination ?? { $0.open() }
         model.onManualBubble = { [weak self] in
-            guard let self, self.state.surface != nil else { return }; self.dismiss()
+            guard let self, self.state.surface != nil || self.state.pending else { return }; self.dismiss()
         }
         model.onCompletionClick = { [weak self] in self?.openCompletedConversation() }
     }
@@ -92,19 +97,35 @@ final class CompletionNotificationController {
     }
     private func dismiss(keepPending: Bool = false) {
         restoreLayer(); model.hideCompletion(); state.dismiss(now: Date().timeIntervalSince1970, keepPending: keepPending)
-        if !keepPending { destination = nil; destinationEndedAt = 0; destinationTitle = nil }
-        presentedDestination = nil; presentedEndedAt = 0
+        if !keepPending { clearDestination() }
+        presentedDestination = nil; presentedEndedAt = 0; presentedSessionID = nil
         closingUntil = Date().timeIntervalSince1970 + 0.55
         (mainPanel as? WidgetPanel)?.updatePointerCapture()
     }
-    func receiveCompletion(conversationID: String?, title: String? = nil, endedAt: Double, cost: Double? = nil) {
-        guard endedAt.isFinite, endedAt / 1000 >= state.acknowledgedAt else { return }
-        state.receive(endedAt: endedAt / 1000)
+    func receiveCompletion(conversationID: String?, title: String? = nil, endedAt: Double, cost: Double? = nil,
+                           sessionID: String? = nil, turnID: String? = nil, now: TimeInterval = Date().timeIntervalSince1970) {
+        let identity = (sessionID ?? conversationID ?? model.profile.rawValue) + ":" + (turnID ?? String(endedAt))
+        guard !seenCompletions.contains(identity), state.receive(endedAt: endedAt / 1000, now: now) else { return }
+        seenCompletions.insert(identity); seenOrder.append(identity)
+        if seenOrder.count > 1024 { seenCompletions.remove(seenOrder.removeFirst()) }
         if endedAt >= destinationEndedAt {
             destination = CompletionDestination(profile: model.profile, conversationID: conversationID)
             destinationEndedAt = endedAt
             destinationTitle = title.map { String($0.prefix(120)) }
             destinationCost = cost
+            destinationSessionID = sessionID
+        }
+    }
+    private func clearDestination() {
+        destination = nil; destinationEndedAt = 0; destinationTitle = nil; destinationCost = nil; destinationSessionID = nil
+    }
+    func resumed(sessionID: String, now: TimeInterval) {
+        if destinationSessionID == sessionID { state.cancelPending(); clearDestination() }
+        if presentedSessionID == sessionID {
+            restoreLayer(); model.hideCompletion(); state.pause()
+            presentedDestination = nil; presentedEndedAt = 0; presentedSessionID = nil
+            closingUntil = now + 0.55
+            (mainPanel as? WidgetPanel)?.updatePointerCapture()
         }
     }
     private func openCompletedConversation() {
@@ -155,7 +176,10 @@ final class CompletionNotificationController {
         guard model.completionEnabled else { return }
         if now - lastPoll >= 1 {
             lastPoll = now
-            for notice in inbox.drain() { receiveCompletion(conversationID: notice.conversationId, title: notice.conversationTitle, endedAt: notice.endedAt, cost: notice.estimatedCost) }
+            for notice in inbox.drain() {
+                if notice.type == "activity" { resumed(sessionID: notice.sessionId, now: now) }
+                else if let endedAt = notice.endedAt { receiveCompletion(conversationID: notice.conversationId, title: notice.conversationTitle, endedAt: endedAt, cost: notice.estimatedCost, sessionID: notice.sessionId, turnID: notice.turnId, now: now) }
+            }
             startMonitor(now: now)
             let active = WorkspaceSnapshot.shared.application(bundleID: model.profile.hostBundleID) != nil
             if lastHostActive != active, let handle = input?.fileHandleForWriting,
@@ -164,13 +188,14 @@ final class CompletionNotificationController {
                 do { try handle.write(contentsOf: bytes); lastHostActive = active } catch { }
             }
         }
+        if state.discardExpired(now: now) { clearDestination() }
         if let surface = state.surface {
             // Mouse-down belongs to this notification. Keep it alive until
             // mouse-up dispatches the click, even at the dismissal deadline.
             if model.isCompletionMessage && model.interactionActive && !busy { return }
             if now >= state.deadline { dismiss(); return }
             if busy {
-                restoreLayer(); model.hideCompletion(); presentedDestination = nil; state.pause(); closingUntil = now + 0.55; return
+                restoreLayer(); model.hideCompletion(); presentedDestination = nil; presentedSessionID = nil; state.pause(); closingUntil = now + 0.55; return
             }
             if surface == .background {
                 if codexFrontmost { dismiss(); return }
@@ -179,23 +204,26 @@ final class CompletionNotificationController {
                     if WorkspaceSnapshot.shared.frontmost?.processIdentifier != old.foregroundPID || !foregroundFullscreen() { dismiss() }
                 }
             } else if !codexFrontmost || !mainPanel.isVisible {
-                model.hideCompletion(); state.pause(); closingUntil = now + 0.55
+                model.hideCompletion(); presentedDestination = nil; presentedSessionID = nil; state.pause(); closingUntil = now + 0.55
             }
             return
         }
         guard state.pending, !busy, !model.bubble, now >= closingUntil else { return }
-        presentedDestination = destination; presentedEndedAt = destinationEndedAt
         if codexFrontmost {
             guard mainPanel.isVisible else { return }
-            model.showCompletion(title: destinationTitle, cost: destinationCost); state.show(.foreground, now: now, openingDelay: 0.52)
+            guard state.show(.foreground, now: now, openingDelay: 0.52) else { return }
+            presentedDestination = destination; presentedEndedAt = destinationEndedAt; presentedSessionID = destinationSessionID
+            model.showCompletion(title: destinationTitle, cost: destinationCost)
         } else {
+            guard state.show(.background, now: now, openingDelay: 0.52) else { return }
+            presentedDestination = destination; presentedEndedAt = destinationEndedAt; presentedSessionID = destinationSessionID
             originalLayer = OriginalLayer(level: mainPanel.level, visible: mainPanel.isVisible,
                 ignoresMouse: mainPanel.ignoresMouseEvents, fullscreen: foregroundFullscreen(),
                 foregroundPID: WorkspaceSnapshot.shared.frontmost?.processIdentifier)
             // Reuse the original panel at its existing frame; never save a temporary position.
             if !(mainPanel is WidgetPanel) { mainPanel.ignoresMouseEvents = false }
             mainPanel.level = .floating; mainPanel.orderFrontRegardless()
-            model.showCompletion(title: destinationTitle, cost: destinationCost); state.show(.background, now: now, openingDelay: 0.52)
+            model.showCompletion(title: destinationTitle, cost: destinationCost)
         }
         (mainPanel as? WidgetPanel)?.updatePointerCapture()
     }

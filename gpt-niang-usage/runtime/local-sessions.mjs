@@ -6,6 +6,7 @@ import {createHash} from 'node:crypto';
 import {estimateMessageCost} from './deepseek-cost.mjs';
 import {RecentSpeedSamples} from './recent-speed.mjs';
 import {StringDecoder} from 'node:string_decoder';
+import {ClaudeCompletionState} from './claude-completion-state.mjs';
 const caches=new Map();
 const metadataCache=new Map();
 function cachedMetadata(file){
@@ -25,8 +26,9 @@ function files(root,depth=4){
 function rowID(profile,id){return createHash('sha256').update(profile+':'+id).digest('hex').slice(0,24);}
 
 export class ClaudeTurnParser {
- constructor(){this.active=null;this.latest=null;this.rejection=null;this.lastAt=null;this.recent=new RecentSpeedSamples();}
+ constructor(){this.active=null;this.latest=null;this.rejection=null;this.lastAt=null;this.recent=new RecentSpeedSamples();this.completion=new ClaudeCompletionState();}
  accept(record){
+  this.completion.accept(record);
   const time=at(record?.timestamp);if(!Number.isFinite(time)||record.isSidechain)return;
   this.lastAt=time;
   if(record.quotaLimits?.status==='rejected'&&record.quotaLimits.rateLimitType==='five_hour'&&number(record.quotaLimits.resetsAt))this.rejection={capturedAt:time,rateLimits:[{kind:'five_hour',percentUsed:100,resetsAt:record.quotaLimits.resetsAt}]};
@@ -71,7 +73,9 @@ export function readClaudeSessions(){
   const file=lookup.get(meta.cliSessionId);if(!file)return {...row,unavailableReason:'该 Code 对话尚无可读取的本地 token 记录。'};
   try{
    const key='claude:'+file;if(!caches.has(key))caches.set(key,new ClaudeTail(file));const parsed=caches.get(key).update();
-   return {...row,...parsed.latest,...parsed.recent.snapshot(),_rejection:parsed.rejection,state:parsed.active&&(!parsed.latest||parsed.lastAt>parsed.latest.sampleAt)&&Date.now()-parsed.lastAt<300000?'running':'idle',unavailableReason:parsed.latest?null:'等待一轮 Code 回复完成并返回有效计数。'};
+   return {...row,...parsed.latest,...parsed.recent.snapshot(),_rejection:parsed.rejection,
+    _completionAt:parsed.completion.endedAt,_completionPending:parsed.completion.running,
+    state:parsed.completion.running||parsed.completion.endedAt===null&&parsed.active?'running':'idle',unavailableReason:parsed.latest?null:'等待一轮 Code 回复完成并返回有效计数。'};
   }catch{return {...row,unavailableReason:'本地 Code 记录正在同步，请稍后。'};}
  });
  const active=new Set(metadata.map(meta=>'claude:'+lookup.get(meta.cliSessionId)));

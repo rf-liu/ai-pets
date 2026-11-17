@@ -42,6 +42,12 @@ export function parseCompletionRecord(record,{sessionId='',seenTurns=null,since=
   if(seenTurns){seenTurns.add(key);if(seenTurns.size>MAX_SEEN_TURNS)seenTurns.delete(seenTurns.values().next().value);}
   return {type:'completion',sessionId,turnId,endedAt:Number.isFinite(endedAt)?endedAt:null};
 }
+export function parseActivityRecord(record,{sessionId='',since=0}={}){
+  if(record?.type!=='event_msg'||record.payload?.type!=='task_started')return null;
+  const at=typeof record.timestamp==='number'?record.timestamp:Date.parse(record.timestamp);
+  if(!Number.isFinite(at)||at<since)return null;
+  return {type:'activity',sessionId};
+}
 
 function fileIdentity(stat){return `${stat.dev}:${stat.ino}`;}
 
@@ -79,7 +85,10 @@ export class CompletionRolloutTail {
       if(this.discardingLongLine){this.discardingLongLine=false;continue;}
       const line=raw.endsWith('\r')?raw.slice(0,-1):raw;
       if(line.length>MAX_LINE_CHARACTERS || !line.includes('"event_msg"'))continue;
-      try{const event=parseCompletionRecord(JSON.parse(line),{sessionId:this.sessionId,seenTurns:this.seenTurns,since:this.since});if(event)notifications.push(event);}catch{}
+      try{
+        const record=JSON.parse(line),options={sessionId:this.sessionId,seenTurns:this.seenTurns,since:this.since};
+        const event=parseActivityRecord(record,options)??parseCompletionRecord(record,options);if(event)notifications.push(event);
+      }catch{}
     }
     if(this.pending.length>MAX_LINE_CHARACTERS){this.pending='';this.discardingLongLine=true;}
     return notifications;
@@ -236,9 +245,10 @@ export class CompletionMonitor {
       }else{tail.file=file;}
       tail.lastSeenAt=now;
       const events=tail.update();
-      const target=events.length?this.targetResolver.resolve(file,readSessionHeader(file)?.conversationId):{};
+      const target=events.some(event=>event.type==='completion')?this.targetResolver.resolve(file,readSessionHeader(file)?.conversationId):{};
       if(target.excluded)continue;
       for(const event of events){
+        if(event.type==='activity'){try{this.onNotification(event);}catch{}continue;}
         const key=(target.conversationId??event.sessionId)+'\0'+event.turnId;
         if(this.seenTurns.has(key))continue;
         this.seenTurns.add(key);if(this.seenTurns.size>MAX_SEEN_TURNS)this.seenTurns.delete(this.seenTurns.values().next().value);
