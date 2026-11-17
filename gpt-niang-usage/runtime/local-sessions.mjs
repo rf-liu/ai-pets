@@ -26,9 +26,10 @@ function files(root,depth=4){
 function rowID(profile,id){return createHash('sha256').update(profile+':'+id).digest('hex').slice(0,24);}
 
 export class ClaudeTurnParser {
- constructor(){this.active=null;this.latest=null;this.rejection=null;this.lastAt=null;this.recent=new RecentSpeedSamples();this.completion=new ClaudeCompletionState();}
+ constructor({collectSpeed=true}={}){this.collectSpeed=collectSpeed;this.active=null;this.latest=null;this.rejection=null;this.lastAt=null;this.recent=new RecentSpeedSamples();this.completion=new ClaudeCompletionState();}
  accept(record){
   this.completion.accept(record);
+  if(!this.collectSpeed)return;
   const time=at(record?.timestamp);if(!Number.isFinite(time)||record.isSidechain)return;
   this.lastAt=time;
   if(record.quotaLimits?.status==='rejected'&&record.quotaLimits.rateLimitType==='five_hour'&&number(record.quotaLimits.resetsAt))this.rejection={capturedAt:time,rateLimits:[{kind:'five_hour',percentUsed:100,resetsAt:record.quotaLimits.resetsAt}]};
@@ -51,20 +52,30 @@ export class ClaudeTurnParser {
   this.active=null;
  }
 }
-class ClaudeTail {
- constructor(file){this.file=file;this.offset=0;this.identity=null;this.pending='';this.parser=new ClaudeTurnParser();}
+export class ClaudeTail {
+ constructor(file,{completionOnly=false,chunkBytes=256*1024}={}){
+  if(!Number.isInteger(chunkBytes)||chunkBytes<1||chunkBytes>256*1024)throw new RangeError('Invalid read chunk');
+  this.file=file;this.completionOnly=completionOnly;this.chunkBytes=chunkBytes;this.offset=0;this.lastKnownSize=0;this.readError=false;this.identity=null;this.pending='';this.decoder=new StringDecoder('utf8');this.parser=new ClaudeTurnParser({collectSpeed:!completionOnly});
+ }
+ get hasUnread(){return !this.readError&&this.offset<this.lastKnownSize;}
  update(){
-  const s=fs.statSync(this.file);
-  if(this.identity!==s.ino||s.size<this.offset){this.identity=s.ino;this.offset=Math.max(0,s.size-8*1024*1024);this.pending='';this.parser=new ClaudeTurnParser();this.skip=this.offset>0;this.parser.recent.partial=this.skip;}
-  const count=Math.min(s.size-this.offset,8*1024*1024);if(count<=0)return this.parser;
-  const buffer=Buffer.alloc(count),fd=fs.openSync(this.file,'r');let read;try{read=fs.readSync(fd,buffer,0,count,this.offset);}finally{fs.closeSync(fd);}this.offset+=read;
-  const lines=(this.pending+buffer.subarray(0,read).toString('utf8')).split('\n');this.pending=lines.pop();if(this.pending.length>1024*1024){this.pending='';this.skip=true;}
-  if(this.skip&&lines.length){lines.shift();this.skip=false;}
-  for(const line of lines){if(line.length>1024*1024||!/^\{/.test(line))continue;try{this.parser.accept(JSON.parse(line));}catch{}}
-  return this.parser;
+  this.readError=true;const s=fs.statSync(this.file);this.lastKnownSize=s.size;
+  const identity=s.dev+':'+s.ino;
+  if(this.identity!==identity||s.size<this.offset){this.identity=identity;this.offset=Math.max(0,s.size-8*1024*1024);this.pending='';this.decoder=new StringDecoder('utf8');this.parser=new ClaudeTurnParser({collectSpeed:!this.completionOnly});this.skip=this.offset>0;this.parser.recent.partial=this.skip;}
+  let remaining=Math.min(s.size-this.offset,8*1024*1024);if(remaining<=0){this.readError=false;return this.parser;}
+  const buffer=Buffer.allocUnsafe(Math.min(remaining,this.chunkBytes)),fd=fs.openSync(this.file,'r');
+  try{while(remaining>0){
+   const read=fs.readSync(fd,buffer,0,Math.min(buffer.length,remaining),this.offset);if(read===0)break;
+   this.offset+=read;remaining-=read;
+   const lines=(this.pending+this.decoder.write(buffer.subarray(0,read))).split('\n');this.pending=lines.pop();
+   if(this.skip&&lines.length){lines.shift();this.skip=false;}
+   for(const line of lines){if(line.length>1024*1024||!/^\{/.test(line))continue;try{this.parser.accept(JSON.parse(line));}catch{}}
+   if(this.pending.length>1024*1024){this.pending='';this.skip=true;this.parser.recent.partial=true;}
+  }}finally{fs.closeSync(fd);}
+  this.readError=false;return this.parser;
  }
 }
-export function readClaudeSessions(){
+export function readClaudeSessions({completionOnly=false}={}){
  const root=path.join(os.homedir(),'Library/Application Support/Claude/claude-code-sessions');
  const metadata=files(root,3).filter(x=>path.basename(x).startsWith('local_')&&x.endsWith('.json')).map(file=>{try{const data=cachedMetadata(file);return data?{...data,_file:file}:null;}catch{return null;}}).filter(x=>x&&!x.isArchived&&x.cliSessionId).sort((a,b)=>(at(b.lastActivityAt)||0)-(at(a.lastActivityAt)||0)).slice(0,12);
  const lookup=new Map(files(path.join(os.homedir(),'.claude/projects'),1).filter(x=>x.endsWith('.jsonl')).map(x=>[path.basename(x,'.jsonl'),x]));
@@ -72,13 +83,14 @@ export function readClaudeSessions(){
   const row={id:rowID('claude',meta.cliSessionId),title:String(meta.title||'Claude Code 对话').slice(0,160),state:'idle',tokensPerSecond:null,modelName:typeof meta.model==='string'?meta.model:'Claude',sampleAt:null,outputTokens:null,intervalSeconds:null};
   const file=lookup.get(meta.cliSessionId);if(!file)return {...row,unavailableReason:'该 Code 对话尚无可读取的本地 token 记录。'};
   try{
-   const key='claude:'+file;if(!caches.has(key))caches.set(key,new ClaudeTail(file));const parsed=caches.get(key).update();
+   const key='claude:'+(completionOnly?'completion:':'speed:')+file;if(!caches.has(key))caches.set(key,new ClaudeTail(file,{completionOnly}));const tail=caches.get(key),parsed=tail.update();
+   if(completionOnly)return {id:row.id,title:row.title,state:parsed.completion.running||tail.hasUnread?'running':'idle',_completionAt:parsed.completion.endedAt,_completionPending:parsed.completion.running||tail.hasUnread,_recordsPending:tail.hasUnread};
    return {...row,...parsed.latest,...parsed.recent.snapshot(),_rejection:parsed.rejection,
-    _completionAt:parsed.completion.endedAt,_completionPending:parsed.completion.running,
+    _completionAt:parsed.completion.endedAt,_completionPending:parsed.completion.running||tail.hasUnread,_recordsPending:tail.hasUnread,
     state:parsed.completion.running||parsed.completion.endedAt===null&&parsed.active?'running':'idle',unavailableReason:parsed.latest?null:'等待一轮 Code 回复完成并返回有效计数。'};
   }catch{return {...row,unavailableReason:'本地 Code 记录正在同步，请稍后。'};}
  });
- const active=new Set(metadata.map(meta=>'claude:'+lookup.get(meta.cliSessionId)));
+ const active=new Set(metadata.map(meta=>'claude:'+(completionOnly?'completion:':'speed:')+lookup.get(meta.cliSessionId)));
  for(const key of caches.keys())if(key.startsWith('claude:')&&!active.has(key))caches.delete(key);
  return rows;
 }
@@ -108,9 +120,10 @@ export class DshTurnParser {
  }
 }
 export class DshFileTail {
- constructor(file){this.file=file;this.offset=0;this.identity=null;this.parser=new DshTurnParser();this.pending='';this.decoder=new StringDecoder('utf8');this.skip=false;}
+ constructor(file){this.file=file;this.offset=0;this.lastKnownSize=0;this.readError=false;this.identity=null;this.parser=new DshTurnParser();this.pending='';this.decoder=new StringDecoder('utf8');this.skip=false;}
+ get hasUnread(){return !this.readError&&this.offset<this.lastKnownSize;}
  update(){
-  const stat=fs.statSync(this.file),identity=stat.dev+':'+stat.ino;
+  this.readError=true;const stat=fs.statSync(this.file),identity=stat.dev+':'+stat.ino;this.lastKnownSize=stat.size;
   if(identity!==this.identity||stat.size<this.offset){
    this.identity=identity;this.offset=Math.max(0,stat.size-8*1024*1024);this.parser=new DshTurnParser();this.pending='';this.decoder=new StringDecoder('utf8');this.skip=this.offset>0;this.parser.recent.partial=this.skip;
    if(this.skip){
@@ -120,14 +133,14 @@ export class DshFileTail {
     }catch{}finally{fs.closeSync(fd);}
    }
   }
-  const count=Math.min(stat.size-this.offset,8*1024*1024);if(count<=0)return this.parser;
+  const count=Math.min(stat.size-this.offset,8*1024*1024);if(count<=0){this.readError=false;return this.parser;}
   const buffer=Buffer.alloc(count),fd=fs.openSync(this.file,'r');let read;
   try{read=fs.readSync(fd,buffer,0,count,this.offset);}finally{fs.closeSync(fd);}this.offset+=read;
   const lines=(this.pending+this.decoder.write(buffer.subarray(0,read))).split('\n');this.pending=lines.pop();
   if(this.skip&&lines.length){lines.shift();this.skip=false;}
   for(const line of lines){if(!line||line.length>2*1024*1024)continue;try{this.parser.accept(JSON.parse(line));}catch{}}
   if(this.pending.length>2*1024*1024){this.pending='';this.skip=true;}
-  return this.parser;
+  this.readError=false;return this.parser;
  }
 }
 export function readDshSessions(){
@@ -146,11 +159,12 @@ export function readDshSessions(){
    }
    }
    if(!parser?.id||parser.depth>0||ids.has(parser.id))continue;ids.add(parser.id);
-   rows.push({id:rowID('dsh',parser.id),title:String(parser.title||'DeepSeek Harness 对话').slice(0,160),state:parser.active&&Date.now()-parser.lastAt<300000?'running':'idle',tokensPerSecond:null,sampleAt:null,outputTokens:null,intervalSeconds:null,...parser.latest,...parser.recent.snapshot(),_costRecords:parser.costRecords,unavailableReason:parser.latest?null:'等待一轮 Harness 回复完成并返回有效计数。'});
+   rows.push({id:rowID('dsh',parser.id),title:String(parser.title||'DeepSeek Harness 对话').slice(0,160),state:parser.active&&Date.now()-parser.lastAt<300000?'running':'idle',tokensPerSecond:null,sampleAt:null,outputTokens:null,intervalSeconds:null,...parser.latest,...parser.recent.snapshot(),_costRecords:parser.costRecords,_recordsPending:caches.get(key)?.tail?.hasUnread??false,unavailableReason:parser.latest?null:'等待一轮 Harness 回复完成并返回有效计数。'});
   }catch{}
  }
  const active=new Set(paths.map(file=>'dsh:'+file));for(const key of caches.keys())if(key.startsWith('dsh:')&&!active.has(key))caches.delete(key);
  return rows.sort((a,b)=>(b.sampleAt??0)-(a.sampleAt??0)).slice(0,12);
 }
-export function readLocalSessions(profile){return profile==='claude'?readClaudeSessions():readDshSessions();}
+export function readLocalSessions(profile,options={}){return profile==='claude'?readClaudeSessions(options):readDshSessions();}
+export function hasLocalSessionBacklog(profile){const prefix=profile==='claude'?'claude:':'dsh:';return [...caches].some(([key,value])=>key.startsWith(prefix)&&(value.tail??value).hasUnread===true);}
 export function clearLocalSessionCaches(profile){for(const key of caches.keys())if(key.startsWith((profile==='claude'?'claude':'dsh')+':'))caches.delete(key);if(profile==='claude')metadataCache.clear();}

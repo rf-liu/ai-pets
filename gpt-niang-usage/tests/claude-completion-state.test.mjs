@@ -59,5 +59,5 @@ test('a Codex tail batch preserves completion followed by resumed activity so th
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'pet-start-signal-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));const file=path.join(root,'session.jsonl');fs.writeFileSync(file,'');
  const tail=new CompletionRolloutTail(file,{sessionId:'fixture',since:1});
  fs.appendFileSync(file,[{type:'event_msg',timestamp:10,payload:{type:'task_complete',turn_id:'old'}},{type:'event_msg',timestamp:11,payload:{type:'task_started',turn_id:'new'}}].map(x=>JSON.stringify(x)+'\n').join(''));
- assert.deepEqual(tail.update().map(e=>e.type),['completion','activity']);assert.deepEqual(tail.update(),[]);
+ assert.deepEqual(tail.update().map(e=>e.type),['activity']);assert.deepEqual(tail.update(),[]);
 });

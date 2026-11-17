@@ -32,8 +32,10 @@ export async function acquireWorkerLock(dataDir,parentPid=0,{pid=process.pid,onL
   if(process.platform==='darwin'){
     // lockf -k uses a kernel flock and keeps its inode stable. The small holder
     // exits on stdin EOF, so a killed worker releases ownership automatically.
-    const hold="process.stdout.write('locked\\n');process.stdin.resume();process.stdin.on('end',()=>process.exit(0));";
-    const holder=spawn('/usr/bin/lockf',['-k','-s','-t','0',path.join(dataDir,'worker-ownership.lock'),process.execPath,'-e',hold],{stdio:['pipe','pipe','ignore']});
+    // The fixed shell command has no interpolated input. After the readiness
+    // byte it execs the system reader, avoiding a V8 runtime just to hold stdin.
+    const hold="printf 'locked\\n'; exec /bin/cat >/dev/null";
+    const holder=spawn('/usr/bin/lockf',['-k','-s','-t','0',path.join(dataDir,'worker-ownership.lock'),'/bin/sh','-c',hold],{stdio:['pipe','pipe','ignore']});
     let released=false;
     holder.stdin.on('error',()=>{});
     const claimed=await new Promise((resolve,reject)=>{

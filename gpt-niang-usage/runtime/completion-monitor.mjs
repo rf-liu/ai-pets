@@ -58,22 +58,24 @@ export class CompletionRolloutTail {
     const stat=fs.statSync(file);this.identity=fileIdentity(stat);
     if(baseline)this.offset=stat.size;
     else if(startAtTail){this.offset=Math.max(0,stat.size-MAX_READ_BYTES);this.discardingLongLine=this.offset>0;}
-    this.lineStartOffset=this.offset;this.lastKnownSize=stat.size;this.boundaryBytes=Buffer.alloc(0);this.boundaryProof=null;
+    this.lineStartOffset=this.offset;this.lastKnownSize=stat.size;this.readError=false;this.heldCompletions=[];this.boundaryBytes=Buffer.alloc(0);this.boundaryProof=null;
   }
+  get hasUnread(){return !this.readError&&this.offset<this.lastKnownSize;}
   update() {
-    let stat;try{stat=fs.statSync(this.file);}catch{return [];}
+    this.readError=true;let stat;try{stat=fs.statSync(this.file);}catch{return [];}
     this.lastKnownSize=stat.size;
     const identity=fileIdentity(stat);
     if(identity!==this.identity || stat.size<this.offset){
       // Retain dedupe and the time boundary when a log rotates or is truncated.
-      this.identity=identity;this.offset=0;this.lineStartOffset=0;this.boundaryBytes=Buffer.alloc(0);this.boundaryProof=null;this.pending='';this.discardingLongLine=false;this.decoder=new StringDecoder('utf8');
+      this.identity=identity;this.offset=0;this.lineStartOffset=0;this.boundaryBytes=Buffer.alloc(0);this.boundaryProof=null;this.pending='';this.discardingLongLine=false;this.decoder=new StringDecoder('utf8');this.heldCompletions=[];
     }
     const remaining=Math.min(stat.size-this.offset,MAX_READ_BYTES);
-    if(remaining<=0)return [];
+    if(remaining<=0){this.readError=false;return [];}
     const buffer=Buffer.alloc(remaining);let count=0,fd;
     try{fd=fs.openSync(this.file,'r');count=fs.readSync(fd,buffer,0,remaining,this.offset);}catch{return [];}
     finally{if(fd!==undefined)fs.closeSync(fd);}
     if(!count)return [];
+    this.readError=false;
     const bytes=buffer.subarray(0,count),lastNewline=bytes.lastIndexOf(10);
     if(lastNewline>=0)this.lineStartOffset=this.offset+lastNewline+1;
     this.offset+=count;
@@ -87,10 +89,15 @@ export class CompletionRolloutTail {
       if(line.length>MAX_LINE_CHARACTERS || !line.includes('"event_msg"'))continue;
       try{
         const record=JSON.parse(line),options={sessionId:this.sessionId,seenTurns:this.seenTurns,since:this.since};
-        const event=parseActivityRecord(record,options)??parseCompletionRecord(record,options);if(event)notifications.push(event);
+        const event=parseActivityRecord(record,options)??parseCompletionRecord(record,options);
+        if(event?.type==='activity'){this.heldCompletions=[];notifications.push(event);}
+        else if(event){this.heldCompletions.push(event);if(this.heldCompletions.length>128)this.heldCompletions.shift();}
       }catch{}
     }
     if(this.pending.length>MAX_LINE_CHARACTERS){this.pending='';this.discardingLongLine=true;}
+    // A later task_started may still be in the unread suffix. Do not announce
+    // an older completion until that bounded backlog is drained.
+    if(!this.hasUnread){notifications.push(...this.heldCompletions);this.heldCompletions=[];}
     return notifications;
   }
 }
@@ -245,6 +252,7 @@ export class CompletionMonitor {
       }else{tail.file=file;}
       tail.lastSeenAt=now;
       const events=tail.update();
+      if(tail.hasUnread){this.contentDirty=true;this.changedFiles.add(file);}
       const target=events.some(event=>event.type==='completion')?this.targetResolver.resolve(file,readSessionHeader(file)?.conversationId):{};
       if(target.excluded)continue;
       for(const event of events){

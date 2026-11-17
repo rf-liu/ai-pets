@@ -93,9 +93,10 @@ function eventTime(value){
   return null;
 }
 export class RolloutTail {
-  constructor(file) { this.file = file; this.offset = 0; this.pending = ''; this.counters = new RolloutCounters(); this.identity = null; }
+  constructor(file) { this.file = file; this.offset = 0; this.lastKnownSize = 0; this.readError = false; this.pending = ''; this.counters = new RolloutCounters(); this.identity = null; }
+  get hasUnread(){return !this.readError&&this.offset<this.lastKnownSize;}
   update() {
-    const stat = fs.statSync(this.file);
+    this.readError = true;const stat = fs.statSync(this.file);this.lastKnownSize = stat.size;
     if (stat.ino !== this.identity || stat.size < this.offset) {
       this.identity = stat.ino; this.offset = Math.max(0, stat.size - 4 * 1024 * 1024);
       this.pending = ''; this.counters = new RolloutCounters();
@@ -103,7 +104,7 @@ export class RolloutTail {
       this.counters.recent.partial = this.skipFirst;
     }
     const remaining = Math.min(stat.size - this.offset, 4 * 1024 * 1024);
-    if (remaining <= 0) return this.counters;
+    if (remaining <= 0) { this.readError = false;return this.counters; }
     const buffer = Buffer.alloc(remaining);
     const fd = fs.openSync(this.file, 'r');
     let count;
@@ -112,13 +113,13 @@ export class RolloutTail {
     // Counters/timestamps are ASCII; a partial UTF-8 content line is never emitted.
     const lines = (this.pending + buffer.subarray(0, count).toString('utf8')).split('\n');
     this.pending = lines.pop();
-    if (this.pending.length > 1024 * 1024) { this.pending = ''; this.skipFirst = true; }
     if (this.skipFirst && lines.length) { lines.shift(); this.skipFirst = false; }
     for (const line of lines) {
       if (!['"event_msg"','"turn_context"','"response_item"'].some(type=>line.includes(type))) continue;
       try { this.counters.accept(JSON.parse(line)); } catch {}
     }
-    return this.counters;
+    if (this.pending.length > 1024 * 1024) { this.pending = ''; this.skipFirst = true; }
+    this.readError = false;return this.counters;
   }
 }
 export function allowedRollout(file, codexHome) {
@@ -136,7 +137,7 @@ function run() {
   const codexHome = process.env.CODEX_HOME || path.join(process.env.HOME || '', '.codex');
   const tails = new Map();
   const gate = new ChangeGate([path.join(codexHome,'sessions'),path.join(codexHome,'archived_sessions'),
-    ...fs.readdirSync(codexHome).filter(name=>/^state_\d+\.sqlite(?:-wal|-shm)?$/.test(name)).map(name=>path.join(codexHome,name))]);
+    ...fs.readdirSync(codexHome).filter(name=>/^state_\d+\.sqlite$/.test(name)).flatMap(name=>['','-wal','-shm'].map(suffix=>path.join(codexHome,name+suffix)))]);
   const send = value => process.stdout.write(JSON.stringify(value) + '\n');
   function update() {
     if(!gate.consume())return;
@@ -158,6 +159,7 @@ function run() {
         try {
           if (!tails.has(file)) tails.set(file, new RolloutTail(file));
           const counters = tails.get(file).update();
+          if(tails.get(file).hasUnread)gate.mark();
           return {...output, state: counters.state, sampleAt: counters.latest?.at ?? null,
             tokensPerSecond: counters.latest?.tokensPerSecond ?? null,
             outputTokens: counters.latest?.outputTokens ?? null, intervalSeconds: counters.latest?.seconds ?? null,
