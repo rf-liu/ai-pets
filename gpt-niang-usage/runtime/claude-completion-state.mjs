@@ -12,7 +12,7 @@ export class ClaudeCompletionState {
   const time=typeof record.timestamp==='number'?record.timestamp:Date.parse(record.timestamp??'');
   if(!Number.isFinite(time))return;
   const content=record.message?.content,blocks=Array.isArray(content)?content.filter(x=>x&&typeof x==='object'):[];
-  if(record.type==='user'&&!record.isMeta&&record.toolUseResult===undefined&&(typeof content==='string'||blocks.some(x=>['text','image'].includes(x.type))&&!blocks.some(x=>x.type==='tool_result'))){
+  if(record.type==='user'&&!record.isMeta&&!record.isCompactSummary&&record.toolUseResult===undefined&&(typeof content==='string'||blocks.some(x=>['text','image'].includes(x.type))&&!blocks.some(x=>x.type==='tool_result'))){
    this.observedInput=true;this.running=true;this.endedAt=null;this.final=null;this.background.clear();this.tools.clear();
   }
   if(record.type==='assistant'){

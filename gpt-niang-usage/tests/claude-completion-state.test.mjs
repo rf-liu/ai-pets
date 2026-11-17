@@ -22,6 +22,12 @@ test('foreign ancestry, blocked/error stop hooks and sidechains cannot finish a 
 test('a truncated history without the owning user input cannot prove detached jobs have ended',()=>{
  const s=new ClaudeCompletionState();s.accept(reply());s.accept(stop());assert.equal(s.endedAt,null);
 });
+test('automatic compaction does not clear unresolved background work as a new user request',()=>{
+ const s=new ClaudeCompletionState();s.accept(user());
+ s.accept({type:'assistant',timestamp:1200,message:{content:[{type:'tool_use',id:'job',name:'Bash',input:{run_in_background:true}}]}});
+ s.accept({...user(),timestamp:1500,isCompactSummary:true});s.accept(reply());s.accept(stop());
+ assert.equal(s.endedAt,null);assert.equal(s.background.size,1);
+});
 test('successful stop hook attachments preserve the ancestry proof and a new user input invalidates it',()=>{
  const s=new ClaudeCompletionState();s.accept(user());s.accept(reply());s.accept({type:'attachment',timestamp:2500,uuid:'hook',parentUuid:'final'});
  s.accept(stop({parentUuid:'hook'}));assert.equal(s.endedAt,3000);
