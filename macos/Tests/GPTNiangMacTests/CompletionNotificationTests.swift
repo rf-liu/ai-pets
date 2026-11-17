@@ -56,6 +56,17 @@ final class CompletionNotificationTests: XCTestCase {
             XCTAssertFalse(model.isCompletionMessage)
         }
     }
+    @MainActor func testFreshDifferentConversationRemainsQueuedAfterDisplayedNoticeEnds() {
+        withController { model, controller in
+            let now = floor(Date().timeIntervalSince1970)
+            controller.receiveCompletion(conversationID: nil, title: "first", endedAt: now * 1000, sessionID: "a", turnID: "1", now: now)
+            controller.tick(codexFrontmost: false, busy: false, now: now)
+            controller.receiveCompletion(conversationID: nil, title: "second", endedAt: (now + 1) * 1000, sessionID: "b", turnID: "1", now: now + 1)
+            controller.tick(codexFrontmost: false, busy: false, now: now + 6)
+            controller.tick(codexFrontmost: false, busy: false, now: now + 7)
+            XCTAssertTrue(model.isCompletionMessage); XCTAssertEqual(model.completionConversationTitle, "second")
+        }
+    }
     @MainActor func testDefaultsAndNotificationPreferencesPreserveExistingValues() throws {
         let data = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: data) }

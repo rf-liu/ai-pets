@@ -200,7 +200,7 @@ final class CompletionNotificationController {
             // Mouse-down belongs to this notification. Keep it alive until
             // mouse-up dispatches the click, even at the dismissal deadline.
             if model.isCompletionMessage && model.interactionActive && !busy { return }
-            if now >= state.deadline { dismiss(); return }
+            if now >= state.deadline { dismiss(keepPending: state.pending); return }
             if busy {
                 restoreLayer(); model.hideCompletion(); presentedDestination = nil; presentedSessionID = nil; state.pause(); closingUntil = now + 0.55; return
             }
