@@ -4,7 +4,7 @@
 const id=value=>typeof value==='string'&&value.length>0&&value.length<=256?value:null;
 const terminal=new Set(['completed','failed','killed','cancelled','canceled']);
 export class ClaudeCompletionState {
- constructor(){this.running=false;this.endedAt=null;this.final=null;this.parents=new Map();this.tools=new Map();this.background=new Set();}
+ constructor(){this.running=false;this.endedAt=null;this.final=null;this.observedInput=false;this.parents=new Map();this.tools=new Map();this.background=new Set();}
  accept(record){
   if(!record||record.isSidechain)return;
   const uuid=id(record.uuid),parent=id(record.parentUuid);
@@ -13,7 +13,7 @@ export class ClaudeCompletionState {
   if(!Number.isFinite(time))return;
   const content=record.message?.content,blocks=Array.isArray(content)?content.filter(x=>x&&typeof x==='object'):[];
   if(record.type==='user'&&!record.isMeta&&record.toolUseResult===undefined&&(typeof content==='string'||blocks.some(x=>['text','image'].includes(x.type))&&!blocks.some(x=>x.type==='tool_result'))){
-   this.running=true;this.endedAt=null;this.final=null;this.background.clear();this.tools.clear();
+   this.observedInput=true;this.running=true;this.endedAt=null;this.final=null;this.background.clear();this.tools.clear();
   }
   if(record.type==='assistant'){
    this.running=true;this.endedAt=null;this.final=null;
@@ -40,7 +40,7 @@ export class ClaudeCompletionState {
     // Without a structured end signal a detached job remains unproven.
    }
   }
-  if(record.type==='system'&&record.subtype==='stop_hook_summary'&&this.final&&time>=this.final.at&&
+  if(record.type==='system'&&record.subtype==='stop_hook_summary'&&this.observedInput&&this.final&&time>=this.final.at&&
     record.preventedContinuation===false&&Array.isArray(record.hookErrors)&&record.hookErrors.length===0&&this.background.size===0){
    let cursor=parent;const seen=new Set();
    while(cursor&&!seen.has(cursor)&&seen.size<64){

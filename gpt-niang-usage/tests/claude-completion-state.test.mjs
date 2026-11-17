@@ -19,6 +19,9 @@ test('foreign ancestry, blocked/error stop hooks and sidechains cannot finish a 
   const s=new ClaudeCompletionState();s.accept(user());s.accept(reply());s.accept(stop(extra));assert.equal(s.endedAt,null);
  }
 });
+test('a truncated history without the owning user input cannot prove detached jobs have ended',()=>{
+ const s=new ClaudeCompletionState();s.accept(reply());s.accept(stop());assert.equal(s.endedAt,null);
+});
 test('successful stop hook attachments preserve the ancestry proof and a new user input invalidates it',()=>{
  const s=new ClaudeCompletionState();s.accept(user());s.accept(reply());s.accept({type:'attachment',timestamp:2500,uuid:'hook',parentUuid:'final'});
  s.accept(stop({parentUuid:'hook'}));assert.equal(s.endedAt,3000);
