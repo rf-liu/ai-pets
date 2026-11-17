@@ -44,6 +44,17 @@ final class CompletionNotificationTests: XCTestCase {
             XCTAssertTrue(model.isCompletionMessage); XCTAssertEqual(model.completionConversationTitle, "second")
         }
     }
+    @MainActor func testWithdrawalPreservesMouseCaptureUntilInteractionEnds() {
+        withController { model, controller in
+            let now = floor(Date().timeIntervalSince1970)
+            controller.receiveCompletion(conversationID: nil, endedAt: now * 1000, sessionID: "a", turnID: "1", now: now)
+            controller.tick(codexFrontmost: false, busy: false, now: now)
+            model.interactionActive = true; controller.resumed(sessionID: "a", now: now + 1)
+            XCTAssertTrue(model.isCompletionMessage)
+            model.interactionActive = false; controller.tick(codexFrontmost: false, busy: false, now: now + 2)
+            XCTAssertFalse(model.isCompletionMessage)
+        }
+    }
     @MainActor func testDefaultsAndNotificationPreferencesPreserveExistingValues() throws {
         let data = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: data) }

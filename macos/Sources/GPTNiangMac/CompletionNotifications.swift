@@ -77,6 +77,7 @@ final class CompletionNotificationController {
     private var presentedDestination: CompletionDestination?
     private var presentedEndedAt: Double = 0
     private var presentedSessionID: String?
+    private var withdrawalAfterInteraction: String?
     private var seenCompletions = Set<String>()
     private var seenOrder: [String] = []
     private let openDestination: (CompletionDestination) -> Void
@@ -98,7 +99,7 @@ final class CompletionNotificationController {
     private func dismiss(keepPending: Bool = false) {
         restoreLayer(); model.hideCompletion(); state.dismiss(now: Date().timeIntervalSince1970, keepPending: keepPending)
         if !keepPending { clearDestination() }
-        presentedDestination = nil; presentedEndedAt = 0; presentedSessionID = nil
+        presentedDestination = nil; presentedEndedAt = 0; presentedSessionID = nil; withdrawalAfterInteraction = nil
         closingUntil = Date().timeIntervalSince1970 + 0.55
         (mainPanel as? WidgetPanel)?.updatePointerCapture()
     }
@@ -122,6 +123,10 @@ final class CompletionNotificationController {
     func resumed(sessionID: String, now: TimeInterval) {
         if destinationSessionID == sessionID { state.cancelPending(); clearDestination() }
         if presentedSessionID == sessionID {
+            // Preserve AppKit's mouse capture until mouse-up. A click already
+            // in progress may still navigate to this same conversation.
+            if model.interactionActive { withdrawalAfterInteraction = sessionID; return }
+            withdrawalAfterInteraction = nil
             restoreLayer(); model.hideCompletion(); state.pause()
             presentedDestination = nil; presentedEndedAt = 0; presentedSessionID = nil
             closingUntil = now + 0.55
@@ -188,6 +193,7 @@ final class CompletionNotificationController {
                 do { try handle.write(contentsOf: bytes); lastHostActive = active } catch { }
             }
         }
+        if let sessionID = withdrawalAfterInteraction, !model.interactionActive { resumed(sessionID: sessionID, now: now) }
         if state.discardExpired(now: now) { clearDestination() }
         if let surface = state.surface {
             // Mouse-down belongs to this notification. Keep it alive until
