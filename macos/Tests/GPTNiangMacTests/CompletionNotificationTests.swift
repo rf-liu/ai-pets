@@ -5,6 +5,7 @@ import GPTNiangCore
 
 final class CompletionNotificationTests: XCTestCase {
     @MainActor private func withController(_ body: (WidgetModel, CompletionNotificationController) -> Void) {
+        _ = NSApplication.shared
         let data = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let model = WidgetModel(dataDirectory: data, resources: data); model.completionEnabled = true
         let panel = NSPanel(contentRect: CGRect(x: 100, y: 100, width: 378, height: 378), styleMask: [.borderless], backing: .buffered, defer: false)

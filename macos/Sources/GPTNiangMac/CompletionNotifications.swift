@@ -121,6 +121,7 @@ final class CompletionNotificationController {
         destination = nil; destinationEndedAt = 0; destinationTitle = nil; destinationCost = nil; destinationSessionID = nil
     }
     func resumed(sessionID: String, now: TimeInterval) {
+        if withdrawalAfterInteraction == sessionID && (!model.interactionActive || presentedSessionID != sessionID) { withdrawalAfterInteraction = nil }
         if destinationSessionID == sessionID { state.cancelPending(); clearDestination() }
         if presentedSessionID == sessionID {
             // Preserve AppKit's mouse capture until mouse-up. A click already
