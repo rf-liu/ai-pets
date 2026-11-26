@@ -1,6 +1,6 @@
 # 来源与许可
 
-项目名称：AI 桌宠（ai-pets）。版本：0.2.3。
+项目名称：AI 桌宠（ai-pets）。版本：0.2.9。
 
 ## 程序与接入参考
 
@@ -8,7 +8,9 @@
 - **Gemini quota widget**：[smiththomson580-star/gemini-quota-widget](https://github.com/smiththomson580-star/gemini-quota-widget)。本机 Antigravity 接入方式与高清猫娘来源。本项目使用统一的原生 UI。
 - **DeepSeek Balance Whale Widget**：[MeteorNOX/DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)。`runtime/deepseek-accounting.mjs` 复用其 MIT 记账纯函数，[完整许可](../gpt-niang-usage/assets/DEEPSEEK-CODE-LICENSE.txt)。
 - **xiaoke-quota**：[liangcka/xiaoke-quota](https://github.com/liangcka/xiaoke-quota)。Claude 早期立绘及设计参考；保留其 [PolyForm Noncommercial 说明](../gpt-niang-usage/assets/CLAUDE-CODE-LICENSE.txt)，该文本不是本项目主体代码的 MIT 许可。
-- **Claude-Niang**：[Gryphus-Triune/Claude-Niang](https://github.com/Gryphus-Triune/Claude-Niang)。新 Claude 半身造型参考。未启用其桌面账号额度查询逻辑。
+- **Claude-Niang**：[Gryphus-Triune/Claude-Niang](https://github.com/Gryphus-Triune/Claude-Niang)。旧版 Claude 半身造型参考。未启用其桌面账号额度查询逻辑。
+- **Claudia 16 表情立绘**：基于 [kirito1207/claudia-pet](https://github.com/kirito1207/claudia-pet) / CrossPet 整理调色，按 [CC BY-NC-SA 4.0](../gpt-niang-usage/assets/CLAUDIA-ARTWORK-LICENSE.md) 保留署名与非商业相同方式共享声明。
+- **LiteLLM 公开价格表**：[BerriAI/litellm](https://github.com/BerriAI/litellm) 维护的公开 `model_prices_and_context_window.json`（MIT），仅每日一次纯 GET 下载用于估算官方 API 折算金额，不携带任何用户标识。
 
 ## 图片与声音
 

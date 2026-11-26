@@ -12,17 +12,29 @@ struct SettingsView: View {
             Picker(model.text("切换宠物设置"), selection: Binding(get: { model.profile }, set: { onProfileSelection($0) })) {
                 ForEach(CompanionProfile.allCases) { profile in Text(profile.title).tag(profile) }
             }.pickerStyle(.segmented)
-            HStack(alignment: .firstTextBaseline) {
-                Text(model.profile.petName).font(.system(size: 27, weight: .semibold, design: .rounded))
-                Text("macOS · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "本机版")").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 12) {
+                if let thumb = model.galleryThumbnail(for: model.selectedSkin) {
+                    Image(nsImage: thumb).resizable().interpolation(.high).scaledToFit()
+                        .frame(width: 52, height: 52)
+                        .padding(4)
+                        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(model.profile.petName).font(.system(size: 24, weight: .semibold, design: .rounded))
+                        Text("macOS · \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "本机版")").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text(model.text(model.profile.slogan)).font(.subheadline).foregroundStyle(.secondary)
+                }
                 Spacer()
+                Button("试看气泡") { model.characterClick() }
+                    .help("立刻在桌宠上触发一次气泡与联动表情预览")
             }
-            Text(model.text(model.profile.slogan)).foregroundStyle(.secondary)
-            clickExpressionSettings
-            languageSettings
             appearanceSettings
+            clickExpressionSettings
             colorSettings
             quoteSettings
+            languageSettings
             if let error = model.settingsError { Text(error).font(.caption).foregroundStyle(.orange) }
             HStack {
                 Button(model.text("開啟資料目錄")) { NSWorkspace.shared.open(model.dataDirectory) }
@@ -37,6 +49,9 @@ struct SettingsView: View {
         .onChange(of: model.language) { _ in model.savePreferences() }
         .onChange(of: model.selectedSkin) { _ in model.reloadCharacter() }
         .onChange(of: model.dsUseOriginalArtwork) { _ in model.reloadCharacter() }
+        .onChange(of: model.dsAutoBlink) { _ in model.reloadCharacter() }
+        .onChange(of: model.moodExpressionLink) { _ in model.savePreferences() }
+        .onChange(of: model.showBubbleSticker) { _ in model.savePreferences() }
         .onChange(of: model.desktopTopmost) { _ in model.savePreferences() }
         .onChange(of: model.soundOn) { _ in model.audio.updateVolume(); model.savePreferences() }
         .onChange(of: model.hideMenu) { _ in model.savePreferences() }
@@ -53,7 +68,7 @@ struct SettingsView: View {
     }
 
     private var clickExpressionSettings: some View {
-        GroupBox(model.text("点击表情")) {
+        GroupBox(model.text("点击表情与互动")) {
             VStack(alignment: .leading, spacing: 10) {
                 Picker(model.text("第几次点击开始随机"), selection: Binding(get: { model.randomExpressionStartTap }, set: { model.setRandomExpressionStartTap($0) })) {
                     ForEach(1...10, id: \.self) { value in Text(model.text("第 %@ 次", String(value))).tag(value) }
@@ -65,9 +80,11 @@ struct SettingsView: View {
                     Button(model.text("恢复默认（第 3 次）")) { model.setRandomExpressionStartTap(3) }
                         .disabled(model.randomExpressionStartTap == 3)
                 }
-                Text(model.text("相邻点击间隔不超过 1 秒算连续点击，停止约 1.5 秒后恢复。每只 AI 独立保存；修改次数后重新计数。"))
+                Toggle("语录与额度联动表情", isOn: $model.moodExpressionLink)
+                Toggle("气泡角色专属小贴纸", isOn: $model.showBubbleSticker)
+                Text("短按点击直接切到对应情绪表情，并随气泡收起恢复日常；长按本体约 0.25 秒可摸头，未点击时保持静止。相邻点击不超过 1 秒算连续点击，达到设定次数后从表情池随机切换。")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if model.profile == .gemini && model.selectedSkin != "gemini-hd" {
+                if model.profile == .gemini && !model.profile.isGeminiHD(skin: model.selectedSkin) {
                     Text(model.text("旧版 Gemini 皮肤仍使用自己的微笑，切回高清皮肤后应用随机表情设置。"))
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -88,13 +105,7 @@ struct SettingsView: View {
     private var appearanceSettings: some View {
             GroupBox(model.text("外觀與顯示")) {
                 VStack(alignment: .leading, spacing: 14) {
-                    if model.profile == .gemini {
-                        Picker("角色外观", selection: $model.selectedSkin) {
-                            Text("Gemini 仓库猫娘").tag("gemini-hd")
-                            Text("原猫娘").tag("default")
-                        }
-                    }
-                    if model.profile == .deepseek { DSArtworkPicker(model: model) }
+                    ArtworkGalleryPicker(model: model)
                     HStack {
                         ForEach([0.8, 1.0, 1.4], id: \.self) { value in
                             Button("\(Int(value * 100))%") { model.scale = value }

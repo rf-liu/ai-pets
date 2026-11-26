@@ -1,5 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {fileURLToPath} from 'node:url';
 import {readUsage,atomicJson,resolveCodexExecutable} from './gemini-usage.mjs';
 import {createRefreshQueue,mergeUsageSnapshot,readRefreshRequest} from './refresh-queue.mjs';
 import {acquireWorkerLock,processAlive,readJson} from './worker-state.mjs';
@@ -9,8 +12,20 @@ import {createPipeRefreshHandler} from './worker-ipc.mjs';
 import {pluginVersion} from './metadata.mjs';
 
 import {runGuiWorker} from './gui-worker.mjs';
+import {loadSavedUsageStats,USAGE_SCAN_INTERVAL_MS} from './gemini-usage-stats.mjs';
+const execFileAsync=promisify(execFile);
+const statsScript=fileURLToPath(new URL('./gemini-usage-stats.mjs',import.meta.url));
+async function runIsolatedUsageScan({dataDir,force}){
+  const args=[statsScript,dataDir];
+  if(force)args.push('--force');
+  const {stdout}=await execFileAsync(process.execPath,args,{timeout:45000,maxBuffer:2*1024*1024});
+  return JSON.parse(stdout.trim());
+}
 if(process.env.AI_PETS_GUI_STDIO==='1'){
-  await runGuiWorker({readUsage,resolveCodexExecutable,pluginVersion});
+  await runGuiWorker({
+    readUsage,resolveCodexExecutable,pluginVersion,
+    usageStats:{loadSaved:loadSavedUsageStats,scan:runIsolatedUsageScan,intervalMs:USAGE_SCAN_INTERVAL_MS}
+  });
 }else{
 const config=readJson(process.argv[2]);
 if(!config?.dataDir || !config?.codexPath)throw new Error('Invalid widget installation configuration');

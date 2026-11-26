@@ -1,0 +1,4 @@
+2026-11-21 气泡角色小贴纸
+
+`sticker-gpt.png`、`sticker-gemini.png`、`sticker-claude.png`、`sticker-deepseek.png` 四枚 256×256 透明 PNG 为本地生成的原创轻量 Q 版装饰徽章，仅用于本机桌宠语录/额度气泡角标装饰。
+不扩大原角色素材授权范围，各角色原有来源与许可仍以 assets/ 目录对应说明文件为准。

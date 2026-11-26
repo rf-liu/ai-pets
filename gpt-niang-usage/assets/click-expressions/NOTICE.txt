@@ -1,10 +1,9 @@
-2026-11-11 点击表情派生素材
+2026-11-11 & 2026-11-21 点击与摸头表情派生素材
 
-这九张 PNG 使用内置 ImageGen，分别编辑接手包现有的 GPT 龙娘、Gemini 高清猫娘、Claude 侧转抱书半身像。
-保留各自身份、造型、服装、构图与画风，只增加点击时的表情及必要边缘修整。
+- 2026-11-11（9 张）：GPT（closed-eyes / pout / surprised）、Gemini 高清（sleepy / wink / pout）、Claude 旧半身（thoughtful / closed-eyes / wink）。
+- 2026-11-21（新增 6 张）：GPT（stroking 按住摸头 / smug 傲娇得意 / tired 低电量委屈）、Gemini 高清（stroking 按住摸头 / sparkle 星星眼灵感 / flustered 反重力慌张）。
+均基于现有对应角色原图做面部微调，严格保持原画风、构图、像素轮廓与透明通道。
 原有普通图片、完成微笑和 DS 表情未被替换。
 
-各角色原有来源及授权声明仍以 assets/ 中随包保留的 CHARACTER-NOTICE.txt、GEMINI-HD-NOTICE.md、GEMINI-ASSET-LICENSE.md、CLAUDE-ARTWORK-LICENSE.txt 等为准。
+各角色原有来源及授权声明仍以 assets/ 中随包保留的 CHARACTER-NOTICE.txt、GEMINI-HD-NOTICE.md、GEMINI-ASSET-LICENSE.md、CLAUDE-ARTWORK-LICENSE.txt、CLAUDIA-ARTWORK-LICENSE.md 等为准。
 本说明不扩大原素材授权范围。
-
-原始生成记录由维护者保留；此仓库仅包含运行所需图片。

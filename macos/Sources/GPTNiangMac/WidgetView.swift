@@ -2,11 +2,17 @@ import SwiftUI
 import AppKit
 import GPTNiangCore
 
+private struct BubbleContentKey: Equatable {
+    let scene: BubbleScene
+    let message: String?
+}
+
 // Coordinates, colors and timing are taken from widget.xaml/widget.ps1 (v1.2.5).
 struct WidgetView: View {
     @ObservedObject var model: WidgetModel
     let onDrag: (CGSize) -> Void
     let onSettings: () -> Void
+    var onUsage: (() -> Void)? = nil
     let onContextMenu: (NSEvent, NSView) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pressed = false
@@ -14,6 +20,7 @@ struct WidgetView: View {
     @State private var tail: Double = 0
     @State private var cloud: Double = 0
     @State private var text: Double = 0
+    @State private var displayedScene: BubbleScene = .quota
     @State private var displayedMessage: String?
     @State private var animationGeneration = 0
     @State private var sceneGeneration = 0
@@ -22,6 +29,7 @@ struct WidgetView: View {
     private var muted: Color { Color(hex: model.profile.bubbleTheme.muted) }
     private let ease = Animation.timingCurve(0.25, 0.1, 0.25, 1, duration: 0.2)
     private let rebound = Animation.timingCurve(0.34, 1.56, 0.64, 1, duration: 0.22)
+    private var contentKey: BubbleContentKey { BubbleContentKey(scene: model.bubbleScene, message: model.message) }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: model.colorScope == .none || model.colorPaused || reduceMotion ? 1 : 1 / 30)) { context in
@@ -30,7 +38,7 @@ struct WidgetView: View {
         }
         .frame(width: 378 * model.displayScale, height: 378 * model.displayScale, alignment: .topLeading)
         .environment(\.colorScheme, .light)
-        .onAppear { animateBubble(model.bubble); displayedMessage = model.message }
+        .onAppear { animateBubble(model.bubble); displayedScene = model.bubbleScene; displayedMessage = model.message }
         .onChange(of: model.colorPaused) { paused in
             if paused { frozenPhase = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.6) / 2.6 }
         }
@@ -38,21 +46,32 @@ struct WidgetView: View {
             if value { frozenPhase = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 2.6) / 2.6 }
         }
         .onChange(of: model.bubble) { animateBubble($0) }
-        .onChange(of: model.message) { next in
+        .onChange(of: contentKey) { next in
             sceneGeneration += 1
             let generation = sceneGeneration
-            if !model.bubble || reduceMotion { displayedMessage = next; return }
+            if !model.bubble || reduceMotion {
+                displayedScene = next.scene
+                displayedMessage = next.message
+                return
+            }
             withAnimation(.timingCurve(0.25, 0.1, 0.25, 1, duration: 0.12)) { text = 0 }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
                 guard generation == sceneGeneration, model.bubble else { return }
-                displayedMessage = next
+                displayedScene = next.scene
+                displayedMessage = next.message
                 withAnimation(.timingCurve(0.25, 0.1, 0.25, 1, duration: 0.16)) { text = 1 }
             }
         }
         .contextMenu {
             if model.profile.quotaEnabled {
                 Button(model.text("查看額度")) { model.toggleQuota() }
-                Button(model.text("刷新額度")) { model.refresh() }
+                if model.profile.usageStatsEnabled {
+                    Button("今日用量") { model.toggleUsage() }
+                    if let onUsage { Button("用量统计…", action: onUsage) }
+                }
+                Button(model.profile.usageStatsEnabled ? "刷新" : model.text("刷新額度")) {
+                    model.refresh(includeUsage: model.profile.usageStatsEnabled)
+                }
             }
             Button(model.text("來一句語錄")) { model.showQuote() }
             Divider()
@@ -70,16 +89,28 @@ struct WidgetView: View {
                 .frame(width: 350, height: 239)
                 .scaleEffect(0.7 + 0.3 * cloud, anchor: UnitPoint(x: 0.4425, y: 0.36)).opacity(cloud)
                 .allowsHitTesting(false)
+            if model.showBubbleSticker && !model.isCompletionMessage, let sticker = model.bubbleStickerImage {
+                Image(nsImage: sticker).resizable().interpolation(.high).scaledToFit()
+                    .frame(width: 28, height: 28)
+                    .scaleEffect(x: mirrored ? -1 : 1, y: 1)
+                    .rotationEffect(.degrees(mirrored ? 10 : -10))
+                    .scaleEffect(0.7 + 0.3 * cloud).opacity(cloud)
+                    .offset(x: 42, y: 12)
+                    .allowsHitTesting(false)
+            }
             Ellipse().fill(style("surface", phase: phase)).overlay(Ellipse().stroke(style("accent", phase: phase), lineWidth: 4))
                 .frame(width: 25, height: 18).scaleEffect(0.7 + 0.3 * tail).opacity(tail)
                 .offset(x: 108, y: 182).allowsHitTesting(false)
             Ellipse().fill(style("surface", phase: phase)).overlay(Ellipse().stroke(style("accent", phase: phase), lineWidth: 4))
                 .frame(width: 17, height: 12).scaleEffect(0.7 + 0.3 * near).opacity(near)
                 .offset(x: 142, y: 214).allowsHitTesting(false)
+            let sceneWidth: CGFloat = displayedMessage != nil ? 218 : (displayedScene == .usage ? 212 : 184)
+            let sceneHeight: CGFloat = displayedMessage != nil ? 126 : (displayedScene == .usage ? 124 : 115)
+            let sceneOffsetX: CGFloat = displayedMessage != nil ? 46 : (displayedScene == .usage ? 49 : 63)
             scene(now: date, phase: phase)
-                .frame(width: displayedMessage == nil ? 184 : 218, height: displayedMessage == nil ? 115 : 126)
+                .frame(width: sceneWidth, height: sceneHeight)
                 .scaleEffect(x: mirrored ? -1 : 1, y: 1)
-                .opacity(text).offset(x: displayedMessage == nil ? 63 : 46, y: displayedMessage == nil ? 22 : 22)
+                .opacity(text).offset(x: sceneOffsetX, y: 22)
                 .allowsHitTesting(false)
             if let image = model.characterImage {
                 let girl = Image(nsImage: image).resizable().interpolation(.high).scaledToFit()
@@ -97,6 +128,7 @@ struct WidgetView: View {
                     withAnimation(reduceMotion ? nil : rebound) { pressed = down }
                     model.play(down ? "press" : "release")
                 }, onDrag: { translation in
+                    if translation != .zero { model.characterDragMoved() }
                     onDrag(translation)
                     if translation == .zero { model.savePreferences() }
                 }, onClick: { model.characterClick() }, onMenu: onContextMenu))
@@ -135,6 +167,8 @@ struct WidgetView: View {
                     .foregroundStyle(model.colorScope == .none ? AnyShapeStyle(ink) : style("ink", phase: phase))
                     .help(quote)
                 }
+            } else if displayedScene == .usage {
+                usageBubbleScene(phase: phase)
             } else {
                 VStack(spacing: 2) {
                     Text(quotaTitle(now: now)).font(.system(size: 12, weight: .semibold)).foregroundStyle(style("ink", phase: phase))
@@ -201,6 +235,78 @@ struct WidgetView: View {
             }
         }
     }
+    private func usageBubbleScene(phase: Double) -> some View {
+        VStack(spacing: 3) {
+            if let stats = model.usageStats {
+                let today = stats.today
+                Text("今日用量 · 更新于 " + stats.updatedTimeText())
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(style("ink", phase: phase))
+                    .lineLimit(1)
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    Text(AntigravityUsageFormat.tokens(today.totalTokens))
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(ink)
+                    Text("tok")
+                        .font(.system(size: 9.5, weight: .medium))
+                        .foregroundStyle(muted)
+                    Spacer(minLength: 4)
+                    Text(today.totalTokens == 0 ? "$0.00" : (today.estimatedCostUsd == nil ? "价格未知" : "≈ " + today.costText))
+                        .font(.system(size: 12.5, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(today.totalTokens > 0 && today.estimatedCostUsd == nil ? AnyShapeStyle(Color.orange) : style("accent", phase: phase))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                }
+                Text("按官方 API 价格折算")
+                    .font(.system(size: 8.5))
+                    .foregroundStyle(muted)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                Rectangle()
+                    .fill(Color(hex: model.profile.bubbleTheme.track))
+                    .frame(height: 1)
+                    .padding(.vertical, 1)
+                if today.topModels.isEmpty {
+                    Text("今日暂无调用记录")
+                        .font(.system(size: 11))
+                        .foregroundStyle(muted)
+                        .padding(.top, 4)
+                } else {
+                    VStack(spacing: 2) {
+                        ForEach(today.topModels.prefix(3)) { item in
+                            HStack(spacing: 4) {
+                                Text(item.displayName)
+                                    .font(.system(size: 9.5, weight: .medium))
+                                    .foregroundStyle(ink)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                                Spacer(minLength: 3)
+                                Text(AntigravityUsageFormat.tokens(item.totalTokens))
+                                    .font(.system(size: 9.5))
+                                    .monospacedDigit()
+                                    .foregroundStyle(muted)
+                                Text(item.priceKnown ? item.costText : "价格未知")
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .monospacedDigit()
+                                    .foregroundStyle(item.priceKnown ? ink : Color.orange)
+                            }
+                        }
+                    }
+                }
+            } else {
+                Text("今日用量")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(style("ink", phase: phase))
+                Text(model.usageStatsBusy ? "正在统计 Antigravity 用量…" : (model.usageStatsError ?? "尚未扫描，可右键点「刷新」"))
+                    .font(.system(size: 11))
+                    .foregroundStyle(muted)
+                    .multilineTextAlignment(.center)
+                    .padding(.top, 4)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
     private func quotaTitle(now: Date) -> String {
         if !model.snapshot.ok { return model.text("暂无法读取") }
         if model.snapshot.balances?.contains(where: \.valid) == true { return model.snapshot.stale(at: now) ? "上次可用余额" : "可用余额" }
@@ -250,6 +356,7 @@ struct WidgetView: View {
         let generation = animationGeneration
         if reduceMotion { near = opening ? 1 : 0; tail = near; cloud = near; text = near; return }
         if opening {
+            displayedScene = model.bubbleScene
             displayedMessage = model.message
             near = 0; tail = 0; cloud = 0; text = 0
             for (delay, part) in [(0.0, 0), (0.13, 1), (0.26, 2), (0.36, 3)] {

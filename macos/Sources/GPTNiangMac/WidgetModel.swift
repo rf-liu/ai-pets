@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import ImageIO
 import GPTNiangCore
 import Darwin
 import os
@@ -41,9 +42,17 @@ private enum CharacterReaction: Equatable {
     case clickExpression(file: String, skin: String)
 }
 
+enum BubbleScene: Equatable {
+    case quota, usage, quote
+}
+
 @MainActor
 final class WidgetModel: ObservableObject {
     @Published var snapshot = UsageSnapshot()
+    @Published var usageStats: AntigravityUsageStats?
+    @Published var usageStatsBusy = false
+    @Published var usageStatsError: String?
+    @Published var bubbleScene: BubbleScene = .quota
     @Published var message: String?
     @Published var bubble = false
     @Published var sceneStarted = Date()
@@ -92,12 +101,21 @@ final class WidgetModel: ObservableObject {
     @Published private(set) var characterImage: NSImage?
     @Published var selectedSkin: String
     @Published var dsUseOriginalArtwork: Bool
+    @Published var dsAutoBlink: Bool
+    @Published var moodExpressionLink: Bool
+    @Published var showBubbleSticker: Bool
     @Published private(set) var randomExpressionStartTap: Int
     private var artworkCache: [String: NSImage] = [:]
+    private var thumbnailCache: [String: NSImage] = [:]
     private var expressionPressed = false
+    private var isPointerDown = false
+    private var pointerDragged = false
+    private var didLongPressPet = false
+    private var petHoldGeneration = 0
     private var blinkStartsAt: TimeInterval = 0
     private var reaction: CharacterReaction?
     private var reactionUntil: TimeInterval = 0
+    private var reactionHeldWithBubble = false
     private var reactionGeneration = 0
     private var needsBaseRestore = false
     private var lastDSClickAt = -Double.infinity
@@ -134,6 +152,7 @@ final class WidgetModel: ObservableObject {
     private var quoteGeneration = 0
     private var refreshUntil = Date.distantPast
     private var lastStatusData: Data?
+    private var lastUsageStatsData: Data?
     private var lastChecked: Double?
     private let logger = Logger(subsystem: "io.github.t7moris.GPTNiangMac", category: "worker")
 
@@ -152,8 +171,14 @@ final class WidgetModel: ObservableObject {
         selectedSkin = initialSkin
         let useOriginalDS = values["dsUseOriginalArtwork"] as? Bool ?? false
         dsUseOriginalArtwork = useOriginalDS
+        dsAutoBlink = values["dsAutoBlink"] as? Bool ?? false
+        moodExpressionLink = values["moodExpressionLink"] as? Bool ?? true
+        showBubbleSticker = values["showBubbleSticker"] as? Bool ?? true
         randomExpressionStartTap = min(10, max(1, values["randomExpressionStartTap"] as? Int ?? 3))
-        characterImage = NSImage(contentsOf: profile.artworkURL(skin: initialSkin, resources: resources, data: dataDirectory, originalDS: useOriginalDS))
+        let initialKey = (profile == .deepseek ? (useOriginalDS ? "original:" : "repaired:") : "") + initialSkin
+        let initialImg = NSImage(contentsOf: profile.artworkURL(skin: initialSkin, resources: resources, data: dataDirectory, originalDS: useOriginalDS))
+        if let initialImg { artworkCache[initialKey] = initialImg }
+        characterImage = initialImg
         language = InterfaceLanguage(rawValue: values["language"] as? String ?? "system") ?? .system
         defaults = .standard
         colorMode = ColorMode(rawValue: values["colorMode"] as? String ?? "mixed") ?? .mixed
@@ -182,6 +207,9 @@ final class WidgetModel: ObservableObject {
         initialStopRequest = readStopRequest()
         loadQuotes()
         snapshot = UsageSnapshot(error: text("正在讀取目前帳戶的額度…"))
+        if profile.usageStatsEnabled {
+            loadSavedUsageStatsFromDisk()
+        }
     }
 
     func text(_ key: String, _ args: String...) -> String { language.text(key, arguments: args) }
@@ -207,12 +235,16 @@ final class WidgetModel: ObservableObject {
                 guard let value = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] else { continue }
                 if value["type"] as? String == "health", let pid = value["pid"] as? Int32, pid == worker?.processIdentifier { lastPipeHeartbeat = now }
                 else if value["type"] as? String == "snapshot", let next = value["snapshot"] as? [String: Any], let data = try? JSONSerialization.data(withJSONObject: next, options: [.sortedKeys]) { readSnapshot(data) }
+                else if value["type"] as? String == "usageStats", let next = value["stats"] as? [String: Any], let data = try? JSONSerialization.data(withJSONObject: next, options: [.sortedKeys]) { readUsageStats(data) }
+                else if value["type"] as? String == "usageStatus" { usageStatsBusy = value["busy"] as? Bool ?? false }
+                else if value["type"] as? String == "usageError" { usageStatsBusy = false; usageStatsError = value["error"] as? String }
                 else if value["type"] as? String == "error" { refreshing = false }
             }
         } else {
             let file = dataDirectory.appendingPathComponent("status.json")
             if let data = try? Data(contentsOf: file) { readSnapshot(data) }
             else if lastStatusData != nil { lastStatusData = nil; snapshot = UsageSnapshot(error: text("正在讀取目前帳戶的額度…")) }
+            if profile.usageStatsEnabled { loadSavedUsageStatsFromDisk() }
         }
         if Date() > refreshUntil { refreshing = false }
         guard settleWorkerHandoff() else { return }
@@ -230,6 +262,19 @@ final class WidgetModel: ObservableObject {
                 let checked = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["checkedAt"] as? Double
                 if checked != lastChecked { lastChecked = checked; refreshing = false }
             }
+    }
+    func readUsageStats(_ data: Data) {
+        if data != lastUsageStatsData {
+            lastUsageStatsData = data
+            if let decoded = try? JSONDecoder().decode(AntigravityUsageStats.self, from: data) {
+                usageStats = decoded
+                usageStatsError = nil
+            }
+        }
+    }
+    private func loadSavedUsageStatsFromDisk() {
+        let file = dataDirectory.appendingPathComponent("usage-stats.json")
+        if let data = try? Data(contentsOf: file) { readUsageStats(data) }
     }
     private func workerRecord(_ name: String) throws -> QuotaWorkerRecord? {
         do {
@@ -425,15 +470,29 @@ final class WidgetModel: ObservableObject {
             .compactMap { $0 } + (env["PATH"] ?? "").split(separator: ":").map { String($0) + "/node" }
         return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }).map { URL(fileURLWithPath: $0) }
     }
-    func refresh(renewBubble: Bool = false) {
+    func refresh(renewBubble: Bool = false, includeUsage: Bool = false) {
         guard profile.quotaEnabled else { return }
         refreshing = true; refreshUntil = Date().addingTimeInterval(22)
-        if renewBubble && bubble && message == nil { restartTTL(delay: 0) }
+        if renewBubble && bubble && bubbleScene == .quota && message == nil { restartTTL(delay: 0) }
         requestRefreshFlag()
+        if includeUsage && profile.usageStatsEnabled { refreshUsageStats() }
     }
-    func hideBubble() { onManualBubble?(); isCompletionMessage = false; quoteGeneration += 1; bubble = false; updateAppearance() }
+    func refreshUsageStats() {
+        guard profile.usageStatsEnabled else { return }
+        usageStatsError = nil
+        if workerInput != nil, sendWorker(["type": "refreshUsage"]) {
+            usageStatsBusy = true
+        }
+    }
+    func hideBubble() {
+        onManualBubble?(); isCompletionMessage = false; quoteGeneration += 1; bubble = false; updateAppearance()
+        clearBubbleHeldReaction()
+    }
     func toggleQuota() {
-        if bubble && message == nil { hideBubble() } else { showQuota() }
+        if bubble && bubbleScene == .quota && message == nil { hideBubble() } else { showQuota() }
+    }
+    func toggleUsage() {
+        if bubble && bubbleScene == .usage && message == nil { hideBubble() } else { showUsage() }
     }
     func resetPosition() {
         if followCodex { x = 1; y = 0 } else { desktopLeft = nil; desktopBottom = nil }
@@ -442,7 +501,7 @@ final class WidgetModel: ObservableObject {
     func writePresence(visible: Bool) {
         guard profile.quotaEnabled else { return }
         if workerInput != nil {
-            let quotaVisible = visible && bubble && message == nil && !isCompletionMessage
+            let quotaVisible = visible && bubble && bubbleScene == .quota && message == nil && !isCompletionMessage
             let key = "\(visible):\(quotaVisible)"
             if lastPipePresence != key, sendWorker(["type": "presence", "visible": visible, "quotaVisible": quotaVisible]) { lastPipePresence = key }
             return
@@ -458,31 +517,60 @@ final class WidgetModel: ObservableObject {
             "specialQuotes": specialQuotes, "bubbleTapAdvance": bubbleTapAdvance, "language": language.rawValue,
             "desktopTopmost": desktopTopmost, "soundOn": soundOn, "hideMenu": hideMenu, "taskCompletionBubble": completionEnabled]
         values.merge(current) { _, new in new }
-        if profile == .gemini || profile == .deepseek { values["skin"] = selectedSkin }
-        if profile == .deepseek { values["dsUseOriginalArtwork"] = dsUseOriginalArtwork }
+        values["skin"] = selectedSkin
+        values["moodExpressionLink"] = moodExpressionLink
+        values["showBubbleSticker"] = showBubbleSticker
+        if profile == .deepseek {
+            values["dsUseOriginalArtwork"] = dsUseOriginalArtwork
+            values["dsAutoBlink"] = dsAutoBlink
+        }
         values["randomExpressionStartTap"] = randomExpressionStartTap
         values["desktopLeft"] = desktopLeft; values["desktopBottom"] = desktopBottom
         try? writeJSON(values, to: file)
     }
     func reloadCharacter() {
-        expressionPressed = false; blinkStartsAt = 0
+        expressionPressed = false; isPointerDown = false; pointerDragged = false; didLongPressPet = false
+        petHoldGeneration += 1; blinkStartsAt = 0
         resetCharacterClickSequence()
-        // A skin switch must never leave an HD reaction on the legacy character.
+        // A skin switch must never leave a stale expression on the newly selected look.
         // Completion smiles stay active and resolve through the newly chosen skin.
-        if case .clickExpression? = reaction {
-            reaction = nil; reactionUntil = 0; reactionGeneration += 1
+        switch reaction {
+        case .clickExpression?, .dsExpression?, .smile?:
+            reaction = nil; reactionUntil = 0; reactionHeldWithBubble = false; reactionGeneration += 1
+        default:
+            break
         }
         refreshDisplayedCharacter()
         savePreferences()
     }
-    private func completionArtwork() -> NSImage? {
-        let file = profile.completionImageFile(skin: selectedSkin)
-        let key = "completion:" + file
+    var bubbleStickerImage: NSImage? {
+        let key = "sticker:" + profile.rawValue
         if let image = artworkCache[key] { return image }
-        let local = dataDirectory.deletingLastPathComponent().appendingPathComponent("artwork/completion-smiles/" + file)
-        let bundled = resources.appendingPathComponent("completion-smiles/" + file)
-        let image = NSImage(contentsOf: FileManager.default.fileExists(atPath: local.path) ? local : bundled)
+        let url = profile.expressionURL(for: profile.bubbleStickerRelativePath, resources: resources, data: dataDirectory)
+        let image = NSImage(contentsOf: url)
+        if let image { artworkCache[key] = image }
+        return image
+    }
+    private func completionArtwork() -> NSImage? {
+        let relative = profile.completionImageRelativePath(skin: selectedSkin)
+        let key = "completion:" + relative
+        if let image = artworkCache[key] { return image }
+        let url = profile.expressionURL(for: relative, resources: resources, data: dataDirectory)
+        let image = NSImage(contentsOf: url)
         if let image { artworkCache[key] = image }; return image
+    }
+    private func pettingArtwork() -> NSImage? {
+        if profile == .deepseek {
+            guard selectedSkin == "ds-desktop-auto" else { return nil }
+            return artwork(for: "ds-desktop-stroking")
+        }
+        guard let relative = profile.pettingImageRelativePath(skin: selectedSkin) else { return nil }
+        let key = "petting:" + profile.rawValue + ":" + relative
+        if let image = artworkCache[key] { return image }
+        let url = profile.expressionURL(for: relative, resources: resources, data: dataDirectory)
+        let image = NSImage(contentsOf: url)
+        if let image { artworkCache[key] = image }
+        return image
     }
     private func refreshDisplayedCharacter(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         needsBaseRestore = true
@@ -491,14 +579,24 @@ final class WidgetModel: ObservableObject {
     private func showCharacterImage(_ image: NSImage?) {
         if characterImage !== image { characterImage = image }
     }
-    private func showReaction(_ next: CharacterReaction, now: TimeInterval) {
-        reaction = next; reactionUntil = now + 1.5; reactionGeneration += 1
+    private func clearBubbleHeldReaction(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard reactionHeldWithBubble, reaction != .completionSmile else { return }
+        reaction = nil; reactionUntil = 0; reactionHeldWithBubble = false; reactionGeneration += 1
+        refreshDisplayedCharacter(now: now)
+    }
+    private func showReaction(_ next: CharacterReaction, now: TimeInterval, duration: Double = 1.5, holdWithBubble: Bool = false) {
+        reaction = next
+        reactionHeldWithBubble = holdWithBubble && next != .completionSmile
+        reactionUntil = reactionHeldWithBubble ? .infinity : now + duration
+        reactionGeneration += 1
         let generation = reactionGeneration
         refreshDisplayedCharacter(now: now)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self, self.reactionGeneration == generation else { return }
-            self.reaction = nil; self.reactionUntil = 0
-            self.refreshDisplayedCharacter()
+        if !reactionHeldWithBubble {
+            DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in
+                guard let self, self.reactionGeneration == generation else { return }
+                self.reaction = nil; self.reactionUntil = 0; self.reactionHeldWithBubble = false
+                self.refreshDisplayedCharacter()
+            }
         }
     }
     private func dsReactionArtwork(_ key: String) -> NSImage? {
@@ -518,9 +616,8 @@ final class WidgetModel: ObservableObject {
         guard skin == selectedSkin, profile.clickExpressionFiles(skin: skin).contains(file) else { return nil }
         let key = "click:" + profile.rawValue + ":" + skin + ":" + file
         if let image = artworkCache[key] { return image }
-        let local = dataDirectory.deletingLastPathComponent().appendingPathComponent("artwork/click-expressions/" + file)
-        let bundled = resources.appendingPathComponent("click-expressions/" + file)
-        let image = NSImage(contentsOf: local) ?? NSImage(contentsOf: bundled)
+        let url = profile.expressionURL(for: file, resources: resources, data: dataDirectory)
+        let image = NSImage(contentsOf: url)
         if let image { artworkCache[key] = image }; return image
     }
     func artwork(for skin: String) -> NSImage? {
@@ -529,21 +626,77 @@ final class WidgetModel: ObservableObject {
         let image = NSImage(contentsOf: profile.artworkURL(skin: skin, resources: resources, data: dataDirectory, originalDS: dsUseOriginalArtwork))
         if let image { artworkCache[key] = image }; return image
     }
-    func characterPressChanged(_ down: Bool, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
-        guard profile == .deepseek, selectedSkin == "ds-desktop-auto" else { return }
-        expressionPressed = down; blinkStartsAt = now + 5
+    /// Lightweight 160px thumbnail for Settings gallery tiles so opening Settings
+    /// does not decode dozens of full 1254px RGBA bitmaps into permanent RAM.
+    func galleryThumbnail(for skin: String) -> NSImage? {
+        let key = (profile == .deepseek ? (dsUseOriginalArtwork ? "original:" : "repaired:") : "") + skin
+        if let cached = thumbnailCache[key] { return cached }
+        let url = profile.artworkURL(skin: skin, resources: resources, data: dataDirectory, originalDS: dsUseOriginalArtwork)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return artwork(for: skin) }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 160,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return artwork(for: skin) }
+        let thumb = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        thumbnailCache[key] = thumb
+        return thumb
+    }
+    func characterDragMoved(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        pointerDragged = true
+        petHoldGeneration += 1
+        if expressionPressed {
+            expressionPressed = false
+            updateCharacterExpression(now: now)
+        }
+    }
+    func activateLongPressPet(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        guard isPointerDown, !pointerDragged, pettingArtwork() != nil else { return }
+        expressionPressed = true
+        didLongPressPet = true
+        if profile == .deepseek && dsAutoBlink { blinkStartsAt = now + 5 }
         updateCharacterExpression(now: now)
+    }
+    func characterPressChanged(_ down: Bool, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        if down {
+            isPointerDown = true
+            pointerDragged = false
+            didLongPressPet = false
+            petHoldGeneration += 1
+            guard pettingArtwork() != nil else { return }
+            let generation = petHoldGeneration
+            // Only enter petting face on a deliberate hold (>= 0.25s) so quick clicks never flash the petting sprite.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                guard let self, self.petHoldGeneration == generation else { return }
+                self.activateLongPressPet()
+            }
+        } else {
+            isPointerDown = false
+            petHoldGeneration += 1
+            guard expressionPressed else { return }
+            let generation = petHoldGeneration
+            // Gently keep the cozy petting face for 0.55s after lifting a headpat hold, then restore cleanly.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
+                guard let self, self.petHoldGeneration == generation, !self.isPointerDown else { return }
+                self.expressionPressed = false
+                self.refreshDisplayedCharacter()
+            }
+        }
     }
     func updateCharacterExpression(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
         if reaction != nil && now >= reactionUntil {
-            reaction = nil; reactionUntil = 0; reactionGeneration += 1; needsBaseRestore = true
+            reaction = nil; reactionUntil = 0; reactionHeldWithBubble = false; reactionGeneration += 1; needsBaseRestore = true
         }
-        let heldSmile = reaction == .smile || reaction == .completionSmile
-        if isCompletionMessage || heldSmile, let image = completionArtwork() {
+        if isCompletionMessage || reaction == .completionSmile, let image = completionArtwork() {
             showCharacterImage(image); needsBaseRestore = true; return
         }
-        if profile == .deepseek, expressionPressed, selectedSkin == "ds-desktop-auto" {
-            showCharacterImage(artwork(for: "ds-desktop-stroking")); needsBaseRestore = true; return
+        if expressionPressed, let image = pettingArtwork() {
+            showCharacterImage(image); needsBaseRestore = true; return
+        }
+        if reaction == .smile, let image = completionArtwork() {
+            showCharacterImage(image); needsBaseRestore = true; return
         }
         if profile == .deepseek, case let .dsExpression(key)? = reaction, let image = dsReactionArtwork(key) {
             showCharacterImage(image); needsBaseRestore = true; return
@@ -551,7 +704,7 @@ final class WidgetModel: ObservableObject {
         if case let .clickExpression(file, skin)? = reaction, let image = clickReactionArtwork(file, skin: skin) {
             showCharacterImage(image); needsBaseRestore = true; return
         }
-        guard profile == .deepseek, selectedSkin == "ds-desktop-auto" else {
+        guard profile == .deepseek, selectedSkin == "ds-desktop-auto", dsAutoBlink else {
             if needsBaseRestore { showCharacterImage(artwork(for: selectedSkin)); needsBaseRestore = false }
             return
         }
@@ -579,11 +732,22 @@ final class WidgetModel: ObservableObject {
         guard profile.quotaEnabled else { showQuote(); return }
         onManualBubble?(); isCompletionMessage = false
         let opening = !bubble
-        let switching = message != nil
+        let switching = bubbleScene != .quota || message != nil
+        bubbleScene = .quota
         message = nil; bubble = true
         updateAppearance()
         restartTTL(delay: opening ? 0.52 : switching ? 0.28 : 0)
         if opening { requestRefreshFlag() }
+    }
+    func showUsage() {
+        guard profile.usageStatsEnabled else { showQuota(); return }
+        onManualBubble?(); isCompletionMessage = false
+        let opening = !bubble
+        let switching = bubbleScene != .usage || message != nil
+        bubbleScene = .usage
+        message = nil; bubble = true
+        updateAppearance()
+        restartTTL(delay: opening ? 0.52 : switching ? 0.28 : 0, ttl: 6.5)
     }
     private func resetCharacterClickSequence() {
         lastCharacterClickAt = -Double.infinity; characterClickCount = 0
@@ -597,28 +761,54 @@ final class WidgetModel: ObservableObject {
         dsClickCount = 0; lastDSClickAt = -Double.infinity; lastRandomDSExpression = nil
         savePreferences()
     }
-    private func showCharacterClickReaction(now: TimeInterval, choosing: (([String]) -> String)?) {
+    private func showCharacterClickReaction(now: TimeInterval, scene: BubbleScene, choosing: (([String]) -> String)?) {
         if clickSequenceSkin != selectedSkin { resetCharacterClickSequence(); clickSequenceSkin = selectedSkin }
         characterClickCount = now >= lastCharacterClickAt && now - lastCharacterClickAt <= 1 ? characterClickCount + 1 : 1
         lastCharacterClickAt = now
-        // The first three taps keep the familiar smile. Legacy Gemini also keeps
-        // its own smile, and missing optional artwork cannot blank the character.
         let files = profile.clickExpressionFiles(skin: selectedSkin).filter { clickReactionArtwork($0, skin: selectedSkin) != nil }
-        guard characterClickCount >= randomExpressionStartTap, !files.isEmpty else {
-            lastClickExpression = "smile"; showReaction(.smile, now: now); return
+        if characterClickCount >= randomExpressionStartTap, !files.isEmpty {
+            let available = (completionArtwork() == nil ? [] : ["smile"]) + files
+            let alternatives = available.filter { $0 != lastClickExpression }
+            let pool = alternatives.isEmpty ? available : alternatives
+            guard let fallback = pool.randomElement() else { showReaction(.smile, now: now, holdWithBubble: bubble); return }
+            let requested = choosing?(pool) ?? fallback
+            let selected = pool.contains(requested) ? requested : fallback
+            lastClickExpression = selected
+            showReaction(selected == "smile" ? .smile : .clickExpression(file: selected, skin: selectedSkin), now: now, holdWithBubble: bubble)
+            return
         }
-        let available = (completionArtwork() == nil ? [] : ["smile"]) + files
-        let alternatives = available.filter { $0 != lastClickExpression }
-        let pool = alternatives.isEmpty ? available : alternatives
-        guard let fallback = pool.randomElement() else { showReaction(.smile, now: now); return }
-        let requested = choosing?(pool) ?? fallback
-        let selected = pool.contains(requested) ? requested : fallback
-        lastClickExpression = selected
-        showReaction(selected == "smile" ? .smile : .clickExpression(file: selected, skin: selectedSkin), now: now)
+        if moodExpressionLink {
+            let mood: String?
+            switch scene {
+            case .quote:
+                mood = PetMoodMatcher.expressionForQuote(message ?? "", profile: profile, skin: selectedSkin)
+            case .usage:
+                mood = PetMoodMatcher.expressionForUsage(usageStats, profile: profile, skin: selectedSkin)
+            case .quota:
+                mood = PetMoodMatcher.expressionForQuota(snapshot, profile: profile, skin: selectedSkin)
+            }
+            if let mood, mood != "smile", clickReactionArtwork(mood, skin: selectedSkin) != nil {
+                lastClickExpression = mood
+                showReaction(.clickExpression(file: mood, skin: selectedSkin), now: now, holdWithBubble: bubble)
+                return
+            }
+        }
+        if let defaultFile = profile.defaultClickExpressionFile(skin: selectedSkin),
+           clickReactionArtwork(defaultFile, skin: selectedSkin) != nil {
+            lastClickExpression = defaultFile
+            showReaction(.clickExpression(file: defaultFile, skin: selectedSkin), now: now, holdWithBubble: bubble)
+            return
+        }
+        lastClickExpression = "smile"; showReaction(.smile, now: now, holdWithBubble: bubble)
     }
     func characterClick(now: TimeInterval = ProcessInfo.processInfo.systemUptime,
                         choosingDSExpression: (([String]) -> String)? = nil,
                         choosingExpression: (([String]) -> String)? = nil) {
+        if didLongPressPet {
+            // Releasing a deliberate headpat hold finishes the headpat cleanly without triggering an accidental click.
+            didLongPressPet = false
+            return
+        }
         if isCompletionMessage {
             dsClickCount = 0; lastDSClickAt = -Double.infinity
             resetCharacterClickSequence()
@@ -627,6 +817,22 @@ final class WidgetModel: ObservableObject {
             return
         }
         let holdingReturnSmile = reaction == .completionSmile && now < reactionUntil
+        let hasUsableQuota = snapshot.ok && !snapshot.displayWindows.isEmpty
+        let nextScene: BubbleScene
+        if !profile.quotaEnabled {
+            nextScene = .quote
+        } else if !bubble {
+            nextScene = (profile.usageStatsEnabled && !hasUsableQuota) ? .usage : .quota
+        } else if profile.usageStatsEnabled && bubbleScene == .quota {
+            nextScene = .usage
+        } else {
+            nextScene = .quote
+        }
+        switch nextScene {
+        case .quota: showQuota()
+        case .usage: showUsage()
+        case .quote: showQuote()
+        }
         if holdingReturnSmile {
             // Ordinary taps still operate the bubble, but cannot replace the
             // promised 1.5-second smile immediately after completion navigation.
@@ -637,10 +843,17 @@ final class WidgetModel: ObservableObject {
                 let pool = Self.dsRapidExpressions.filter { $0 != lastRandomDSExpression }
                 let selected = choosingDSExpression?(pool) ?? pool.randomElement()!
                 lastRandomDSExpression = selected
-                showReaction(.dsExpression(selected), now: now)
+                showReaction(.dsExpression(selected), now: now, holdWithBubble: bubble)
+            } else if moodExpressionLink {
+                let mood = nextScene == .quote
+                    ? PetMoodMatcher.expressionForQuote(message ?? "", profile: .deepseek, skin: selectedSkin)
+                    : PetMoodMatcher.expressionForQuota(snapshot, profile: .deepseek, skin: selectedSkin)
+                if let mood, dsReactionArtwork(mood) != nil {
+                    lastRandomDSExpression = mood
+                    showReaction(.dsExpression(mood), now: now, holdWithBubble: bubble)
+                }
             }
-        } else { showCharacterClickReaction(now: now, choosing: choosingExpression) }
-        if bubble { showQuote() } else { showQuota() }
+        } else { showCharacterClickReaction(now: now, scene: nextScene, choosing: choosingExpression) }
     }
     private func requestRefreshFlag() {
         if workerInput != nil, sendWorker(["type": "refresh"]) { return }
@@ -661,6 +874,7 @@ final class WidgetModel: ObservableObject {
         onManualBubble?(); isCompletionMessage = false
         let opening = !bubble
         loadQuotes()
+        bubbleScene = .quote
         message = QuoteFile.choose(quotes, excluding: lastQuote) ?? "我在這裡，慢慢來就好。"
         lastQuote = message; bubble = true
         updateAppearance()
@@ -670,6 +884,7 @@ final class WidgetModel: ObservableObject {
         quoteGeneration += 1; isCompletionMessage = true
         completionConversationTitle = title?.trimmingCharacters(in: .whitespacesAndNewlines)
         completionCost = profile == .deepseek ? cost.flatMap { $0.isFinite && $0 >= 0 ? $0 : nil } : nil
+        bubbleScene = .quote
         message = profile.hostName + "\n" + text("有回复已结束"); bubble = true
         colorScope = .none; sceneStarted = Date().addingTimeInterval(0.52)
     }
@@ -684,13 +899,14 @@ final class WidgetModel: ObservableObject {
                                       special: specialQuotes.components(separatedBy: "\n"),
                                       fullChance: fullChance, textChance: textChance, draw: Double.random(in: 0..<1))
     }
-    private func restartTTL(delay: Double) {
+    private func restartTTL(delay: Double, ttl: Double = 5) {
         quoteGeneration += 1
         sceneStarted = Date().addingTimeInterval(delay)
         let generation = quoteGeneration
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay + 5) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay + ttl) { [weak self] in
             guard let self, self.quoteGeneration == generation else { return }
             self.bubble = false; self.updateAppearance()
+            self.clearBubbleHeldReaction()
         }
     }
     // Bubbles are display-only in every mode; all actions use the pet body.

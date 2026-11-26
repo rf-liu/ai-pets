@@ -23,13 +23,16 @@ final class CompanionController: NSObject, NSMenuDelegate {
     private let profileDataDirectory: URL
     private let onProfileSelection: (CompanionProfile) -> Void
     private let onSpeedSelection: (CompanionProfile) -> Void
+    private let onUsageSelection: (CompanionProfile) -> Void
     private let isSpeedVisible: () -> Bool
     private let utilityWindows: UtilityWindowCoordinator
     init(profile: CompanionProfile, dataDirectory: URL, onProfileSelection: @escaping (CompanionProfile) -> Void,
-         onSpeedSelection: @escaping (CompanionProfile) -> Void, isSpeedVisible: @escaping () -> Bool,
+         onSpeedSelection: @escaping (CompanionProfile) -> Void,
+         onUsageSelection: @escaping (CompanionProfile) -> Void = { _ in },
+         isSpeedVisible: @escaping () -> Bool,
          utilityWindows: UtilityWindowCoordinator) {
         self.profile = profile; self.profileDataDirectory = dataDirectory; self.onProfileSelection = onProfileSelection
-        self.onSpeedSelection = onSpeedSelection; self.isSpeedVisible = isSpeedVisible
+        self.onSpeedSelection = onSpeedSelection; self.onUsageSelection = onUsageSelection; self.isSpeedVisible = isSpeedVisible
         self.utilityWindows = utilityWindows
         super.init()
     }
@@ -96,7 +99,7 @@ final class CompanionController: NSObject, NSMenuDelegate {
         panel.animationBehavior = .none
         panel.isReleasedWhenClosed = false
         panel.configurePointerCapture(model: model)
-        panel.install(NSHostingView(rootView: WidgetView(model: model, onDrag: { [weak self] in self?.drag($0) }, onSettings: { [weak self] in self?.showSettings() }, onContextMenu: { [weak self] event, view in self?.showContextMenu(event, view: view) })))
+        panel.install(NSHostingView(rootView: WidgetView(model: model, onDrag: { [weak self] in self?.drag($0) }, onSettings: { [weak self] in self?.showSettings() }, onUsage: profile.usageStatsEnabled ? { [weak self] in self?.showUsageDetail() } : nil, onContextMenu: { [weak self] event, view in self?.showContextMenu(event, view: view) })))
         completion = CompletionNotificationController(model: model, panel: panel)
         buildMenu()
         languageSubscription = model.$language.dropFirst().sink { [weak self] _ in
@@ -163,7 +166,8 @@ final class CompanionController: NSObject, NSMenuDelegate {
         for item in menu.items {
             model.audio.updateNativeItem(item)
             if item.action == #selector(toggleCompletion) { item.state = model.completionEnabled ? .on : .off }
-            if item.action == #selector(showQuota) { item.title = model.text(model.bubble && model.message == nil ? "收起气泡" : "查看額度") }
+            if item.action == #selector(showQuota) { item.title = model.text(model.bubble && model.bubbleScene == .quota && model.message == nil ? "收起气泡" : "查看額度") }
+            if item.action == #selector(showUsageBubble) { item.title = model.bubble && model.bubbleScene == .usage && model.message == nil ? "收起用量" : "今日用量" }
         }
     }
     func menuDidClose(_ menu: NSMenu) { trackingMenus = max(0, trackingMenus - 1) }
@@ -174,7 +178,13 @@ final class CompanionController: NSObject, NSMenuDelegate {
     private func buildMenu() {
         let menu = NSMenu(); menu.delegate = self
         var actions: [(String, Selector)] = []
-        if profile.quotaEnabled { actions += [(profile.petName + " · " + profile.hostName + " 额度", #selector(showQuota)), (model.text("刷新額度"), #selector(refresh))] }
+        if profile.quotaEnabled {
+            actions += [(profile.petName + " · " + profile.hostName + " 额度", #selector(showQuota))]
+            if profile.usageStatsEnabled {
+                actions += [("今日用量", #selector(showUsageBubble)), ("用量统计…", #selector(showUsageDetail))]
+            }
+            actions += [(profile.usageStatsEnabled ? "刷新" : model.text("刷新額度"), #selector(refresh))]
+        }
         actions += [(model.text("來一句語錄"), #selector(quote)), (model.text("聊天速度…"), #selector(showSpeed))]
         for (title, selector) in actions {
             let item = NSMenuItem(title: model.text(title), action: selector, keyEquivalent: ""); item.target = self; menu.addItem(item)
@@ -215,7 +225,9 @@ final class CompanionController: NSObject, NSMenuDelegate {
     }
     @objc private func toggleCompletion() { model.completionEnabled.toggle(); model.savePreferences() }
     @objc private func showQuota() { model.toggleQuota(); updateWindow() }
-    @objc private func refresh() { model.refresh() }
+    @objc private func showUsageBubble() { model.toggleUsage(); updateWindow() }
+    @objc private func showUsageDetail() { onUsageSelection(profile) }
+    @objc private func refresh() { model.refresh(includeUsage: profile.usageStatsEnabled) }
     @objc private func quote() { model.showQuote() }
     @objc private func showSettings() { onProfileSelection(profile) }
     func presentSettings(frame: NSRect? = nil) {

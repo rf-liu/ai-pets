@@ -7,7 +7,7 @@
 <p>
   <img src="gpt-niang-usage/assets/gpt-dragon-niang-bust.png" width="145" alt="GPT 龙娘">
   <img src="gpt-niang-usage/assets/gemini-catgirl-hd.webp" width="145" alt="Gemini 猫娘">
-  <img src="gpt-niang-usage/assets/claude-bust.png" width="145" alt="Claude 小克">
+  <img src="gpt-niang-usage/assets/claudia/idle.png" width="145" alt="Claude 小克">
   <img src="gpt-niang-usage/assets/ds-restored/main.png" width="145" alt="DS 小鲸鱼">
 </p>
 
@@ -16,7 +16,7 @@
 ## 四只宠物，各陪各的窗口
 
 - **GPT 龙娘 / Codex**：查看当前登录账号的额度；从本地对话记录统计速度，回复完成后提醒。
-- **Gemini 猫娘 / Antigravity**：读取本机语言服务的额度和生成统计；可选高清猫娘或原版外观。
+- **Gemini 猫娘 / Antigravity**：支持桌面版与 `agy` 命令行的每小时增量只读用量统计（按模型统计 Token 与 LiteLLM 官方 API 公开单价折算，右键可看今天 / 近 7 天明细）及本机生成速度；可选高清猫娘或原版外观。
 - **Claude 小克 / Claude 桌面版**：点击直接显示语录。**不查询 Claude 额度，不读取桌面登录 Cookie**。Code 对话的本地 TPS 与完成提醒保留；普通 Chat / Cowork 的本地计数暂不支持。
 - **DS 小鲸鱼 / DeepSeek Harness**：通过可选的宿主桥接显示余额、今日已观测消耗和每轮费用估算；保留摸头、眨眼与表情切换。
 
@@ -34,10 +34,10 @@
 
 ## 安装
 
-需要 **macOS 13+、Node.js 20+**，以及你要跟随的宿主 App。当前提供的安装包在 Apple Silicon 上构建和验证；Intel 尚未实机验证。
+需要 **macOS 13+、Node.js 22.5+**（或 Node.js 20+ 基础功能），以及你要跟随的宿主 App。当前提供的安装包在 Apple Silicon 上构建和验证；Intel 尚未实机验证。
 
 1. 安装 Node.js，例如 `brew install node`。
-2. 从 [Releases](https://github.com/rf-liu/ai-pets/releases/latest) 下载 `ai-pets-v0.2.8-macos-arm64.zip`，核对同页 `SHA256SUMS.txt`。
+2. 从 [Releases](https://github.com/rf-liu/ai-pets/releases/latest) 下载 `ai-pets-v0.2.9-macos-arm64.zip`，核对同页 `SHA256SUMS.txt`。
 3. 解压，将 `GPTNiangMac.app` 放入「应用程序」，**从 Finder 手动打开一次**。这是 AI 桌宠的兼容应用名称。
 4. 打开 Codex / Antigravity / Claude，宠物会跟随相应窗口。DeepSeek 余额需要另外配置[桥接](integrations/README.md)。
 

@@ -11,6 +11,7 @@ import Darwin
     private var root: URL!
     private var speedWindow: NSWindow?
     private var speedProfile: CompanionProfile = .gpt
+    private var usageWindow: NSWindow?
     private var lastStatusState: Data?
     private let utilityWindows = UtilityWindowCoordinator()
 
@@ -73,6 +74,7 @@ import Darwin
                 let source = root.appendingPathComponent("gpt/preferences.json")
                 if let bytes = try? Data(contentsOf: source), var values = try? JSONSerialization.jsonObject(with: bytes) as? [String: Any] {
                     values["x"] = 0; values["desktopLeft"] = nil; values["desktopBottom"] = nil
+                    values["skin"] = nil // Each pet starts with its own default skin.
                     values["randomExpressionStartTap"] = nil // A newly created pet starts at its own default of three.
                     if let copy = try? JSONSerialization.data(withJSONObject: values) { try? copy.write(to: file, options: .atomic) }
                 }
@@ -85,6 +87,7 @@ import Darwin
         let controller = CompanionController(profile: profile, dataDirectory: root.appendingPathComponent(profile.rawValue, isDirectory: true),
             onProfileSelection: { [weak self] profile in self?.showSettings(profile) },
             onSpeedSelection: { [weak self] profile in self?.showSpeed(profile) },
+            onUsageSelection: { [weak self] profile in self?.showUsage(profile) },
             isSpeedVisible: { [weak self] in self?.speedWindow?.isVisible == true && self?.speedProfile == profile },
             utilityWindows: utilityWindows)
         companions[profile] = controller
@@ -117,13 +120,30 @@ import Darwin
     private func showSettings(_ profile: CompanionProfile) {
         selected = profile
         if let window = speedWindow { utilityWindows.hide(window) }
+        if let window = usageWindow { utilityWindows.hide(window) }
         let frame = companions.values.compactMap(\.visibleSettingsFrame).first
         let controller = ensure(profile)
         companions.values.forEach { $0.hideSettingsWindow() }
         controller.presentSettings(frame: frame)
     }
+    private func showUsage(_ profile: CompanionProfile) {
+        companions.values.forEach { $0.hideSettingsWindow() }
+        if let window = speedWindow { utilityWindows.hide(window) }
+        let target: CompanionProfile = profile.usageStatsEnabled ? profile : .gemini
+        let controller = ensure(target)
+        if usageWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 680), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false; window.center(); usageWindow = window
+        }
+        usageWindow?.title = "Antigravity 用量统计 · " + target.title
+        usageWindow?.contentView = NSHostingView(rootView: UsageStatsView(model: controller.speedModel))
+        if let window = usageWindow {
+            utilityWindows.present(window)
+        }
+    }
     private func showSpeed(_ profile: CompanionProfile) {
         companions.values.forEach { $0.hideSettingsWindow() }
+        if let window = usageWindow { utilityWindows.hide(window) }
         if speedProfile != profile { companions[speedProfile]?.speedStore.stop() }
         speedProfile = profile
         let controller = ensure(profile)
