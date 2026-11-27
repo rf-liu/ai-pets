@@ -11,6 +11,8 @@ import {atomicCompactJson,canonicalizeModel,computeTokenCost,ensurePricing,looku
 export const USAGE_SCAN_INTERVAL_MS=60*60*1000;
 export const USAGE_STATS_FILENAME='usage-stats.json';
 export const USAGE_CACHE_FILENAME='usage-stats-cache.json';
+export const USAGE_WINDOW_DAYS=30;
+export const USAGE_CACHE_VERSION=2;
 export const USAGE_DISCLAIMER='Antigravity 为订阅制，金额按官方 API 公开单价折算，非实际扣费。';
 const UUID_RE=/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const ABOVE_200K_THRESHOLD=200000;
@@ -514,12 +516,21 @@ export function loadSavedUsageStats(dataDir){
 }
 
 function loadUsageCache(dataDir){
-  if(!dataDir)return {conversations:{},labels:{}};
+  if(!dataDir)return {version:0,windowDays:0,conversations:{},labels:{}};
   const parsed=readJson(path.join(dataDir,USAGE_CACHE_FILENAME));
-  if(!parsed||typeof parsed!=='object')return {conversations:{},labels:{}};
+  if(!parsed||typeof parsed!=='object')return {version:0,windowDays:0,conversations:{},labels:{}};
+  const windowDays=Number.isSafeInteger(parsed.windowDays)?parsed.windowDays:7;
+  const labels=parsed.labels&&typeof parsed.labels==='object'?parsed.labels:{};
+  // Upgrading from a narrower window (e.g. 7d -> 30d) invalidates per-conversation
+  // watermarks once so older turns from still-active threads are backfilled cleanly.
+  const conversations=(windowDays>=USAGE_WINDOW_DAYS&&parsed.conversations&&typeof parsed.conversations==='object')
+    ?parsed.conversations
+    :{};
   return {
-    conversations:parsed.conversations&&typeof parsed.conversations==='object'?parsed.conversations:{},
-    labels:parsed.labels&&typeof parsed.labels==='object'?parsed.labels:{}
+    version:Number.isSafeInteger(parsed.version)?parsed.version:1,
+    windowDays,
+    conversations,
+    labels
   };
 }
 
@@ -538,34 +549,41 @@ export async function scanAntigravityUsage({
 }={}){
   const savedSummary=loadSavedUsageStats(dataDir);
   const todayKey=localDateKey(now);
+  const threeDayKeys=new Set(recentDateKeys(now,3));
   const sevenDayKeys=new Set(recentDateKeys(now,7));
-  const keepKeys=new Set(recentDateKeys(now,8));
-  const cutoffMs=startOfWindowMs(now,7);
+  const thirtyDayKeys=new Set(recentDateKeys(now,USAGE_WINDOW_DAYS));
+  const keepKeys=new Set(recentDateKeys(now,USAGE_WINDOW_DAYS+1));
+  const cutoffMs=startOfWindowMs(now,USAGE_WINDOW_DAYS);
   const statCutoffMs=cutoffMs-24*60*60*1000;
+  const savedHasAllPeriods=Boolean(savedSummary?.last3Days&&savedSummary?.last30Days);
 
-  if(!force&&savedSummary?.updatedAt&&now-savedSummary.updatedAt>=0&&now-savedSummary.updatedAt<USAGE_SCAN_INTERVAL_MS){
+  if(!force&&savedHasAllPeriods&&savedSummary?.updatedAt&&now-savedSummary.updatedAt>=0&&now-savedSummary.updatedAt<USAGE_SCAN_INTERVAL_MS){
     if(savedSummary.todayDate===todayKey){
       return {summary:savedSummary,scanned:false};
     }
     const cache=loadUsageCache(dataDir);
-    const pricing=await fetchPricing(dataDir,{now,fetchImpl,force:false});
-    const {pruned}=pruneConversations(cache.conversations,keepKeys,statCutoffMs);
-    const updatedSummary={
-      ...savedSummary,
-      todayDate:todayKey,
-      pricingUpdatedAt:pricing.updatedAt,
-      pricingSource:pricing.source,
-      pricingStale:pricing.stale,
-      today:buildPeriodSummary(pruned,cache.labels,new Set([todayKey]),pricing.models),
-      last7Days:buildPeriodSummary(pruned,cache.labels,sevenDayKeys,pricing.models)
-    };
-    return {summary:updatedSummary,scanned:false};
+    if(cache.windowDays>=USAGE_WINDOW_DAYS){
+      const pricing=await fetchPricing(dataDir,{now,fetchImpl,force:false});
+      const {pruned}=pruneConversations(cache.conversations,keepKeys,statCutoffMs);
+      const updatedSummary={
+        ...savedSummary,
+        todayDate:todayKey,
+        pricingUpdatedAt:pricing.updatedAt,
+        pricingSource:pricing.source,
+        pricingStale:pricing.stale,
+        today:buildPeriodSummary(pruned,cache.labels,new Set([todayKey]),pricing.models),
+        last3Days:buildPeriodSummary(pruned,cache.labels,threeDayKeys,pricing.models),
+        last7Days:buildPeriodSummary(pruned,cache.labels,sevenDayKeys,pricing.models),
+        last30Days:buildPeriodSummary(pruned,cache.labels,thirtyDayKeys,pricing.models)
+      };
+      return {summary:updatedSummary,scanned:false};
+    }
   }
 
   const loadedCache=loadUsageCache(dataDir);
   const labels={...loadedCache.labels};
   const {pruned:conversations,changed:prunedOnLoad}=pruneConversations(structuredClone(loadedCache.conversations),keepKeys,statCutoffMs);
-  let cacheDirty=prunedOnLoad;
+  let cacheDirty=prunedOnLoad||loadedCache.windowDays<USAGE_WINDOW_DAYS;
 
   const cliFiles=listUuidDbFiles(cliRoot);
   const desktopFiles=listUuidDbFiles(desktopRoot);
@@ -691,7 +709,7 @@ export async function scanAntigravityUsage({
   const pricing=await fetchPricing(dataDir,{now,fetchImpl,force:false});
 
   const summary={
-    version:1,
+    version:USAGE_CACHE_VERSION,
     updatedAt:now,
     todayDate:todayKey,
     disclaimer:USAGE_DISCLAIMER,
@@ -699,7 +717,9 @@ export async function scanAntigravityUsage({
     pricingSource:pricing.source,
     pricingStale:pricing.stale,
     today:buildPeriodSummary(cleaned,labels,new Set([todayKey]),pricing.models),
+    last3Days:buildPeriodSummary(cleaned,labels,threeDayKeys,pricing.models),
     last7Days:buildPeriodSummary(cleaned,labels,sevenDayKeys,pricing.models),
+    last30Days:buildPeriodSummary(cleaned,labels,thirtyDayKeys,pricing.models),
     scan:{
       rpcConversationsScanned,
       dbFilesOpened,
@@ -712,7 +732,7 @@ export async function scanAntigravityUsage({
     fs.mkdirSync(dataDir,{recursive:true});
     atomicCompactJson(path.join(dataDir,USAGE_STATS_FILENAME),summary);
     if(cacheDirty||!fs.existsSync(path.join(dataDir,USAGE_CACHE_FILENAME))){
-      atomicCompactJson(path.join(dataDir,USAGE_CACHE_FILENAME),{version:1,labels,conversations:cleaned});
+      atomicCompactJson(path.join(dataDir,USAGE_CACHE_FILENAME),{version:USAGE_CACHE_VERSION,windowDays:USAGE_WINDOW_DAYS,labels,conversations:cleaned});
     }
   }
 

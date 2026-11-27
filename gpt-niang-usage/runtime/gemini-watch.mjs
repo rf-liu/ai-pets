@@ -18,7 +18,7 @@ const statsScript=fileURLToPath(new URL('./gemini-usage-stats.mjs',import.meta.u
 async function runIsolatedUsageScan({dataDir,force}){
   const args=[statsScript,dataDir];
   if(force)args.push('--force');
-  const {stdout}=await execFileAsync(process.execPath,args,{timeout:45000,maxBuffer:2*1024*1024});
+  const {stdout}=await execFileAsync(process.execPath,args,{timeout:120000,maxBuffer:2*1024*1024});
   return JSON.parse(stdout.trim());
 }
 if(process.env.AI_PETS_GUI_STDIO==='1'){

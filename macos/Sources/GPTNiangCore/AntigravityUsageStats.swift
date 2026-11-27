@@ -114,8 +114,20 @@ public struct AntigravityUsageStats: Decodable, Equatable {
     public let pricingSource: String?
     public let pricingStale: Bool?
     public let today: AntigravityUsagePeriod
+    public let last3Days: AntigravityUsagePeriod?
     public let last7Days: AntigravityUsagePeriod
+    public let last30Days: AntigravityUsagePeriod?
     public let scan: AntigravityUsageScanInfo?
+
+    public func period(days: Int) -> AntigravityUsagePeriod? {
+        switch days {
+        case 1: return today
+        case 3: return last3Days
+        case 7: return last7Days
+        case 30: return last30Days
+        default: return nil
+        }
+    }
 
     public func updatedTimeText(timeZone: TimeZone = .current) -> String {
         AntigravityUsageFormat.timeHHmm(updatedAt, timeZone: timeZone)

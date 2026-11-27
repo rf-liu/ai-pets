@@ -121,7 +121,7 @@ export async function runGuiWorker({readUsage,resolveCodexExecutable,pluginVersi
       publish({type:'usageStats',stats:cached});
     }
     const now=Date.now();
-    if(!cached?.updatedAt||now-cached.updatedAt>=usageIntervalMs||cached.todayDate!==currentLocalDay(now)){
+    if(!cached?.updatedAt||!cached.last3Days||!cached.last30Days||now-cached.updatedAt>=usageIntervalMs||cached.todayDate!==currentLocalDay(now)){
       void runUsageScan(false);
     }
   }

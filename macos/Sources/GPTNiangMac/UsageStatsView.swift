@@ -3,12 +3,49 @@ import GPTNiangCore
 
 enum UsageStatsRange: String, CaseIterable, Identifiable {
     case today
+    case last3Days
     case last7Days
+    case last30Days
+
     var id: String { rawValue }
+    var days: Int {
+        switch self {
+        case .today: return 1
+        case .last3Days: return 3
+        case .last7Days: return 7
+        case .last30Days: return 30
+        }
+    }
     var title: String {
         switch self {
         case .today: return "今天"
+        case .last3Days: return "近 3 天"
         case .last7Days: return "近 7 天"
+        case .last30Days: return "近 30 天"
+        }
+    }
+    var tokenCardTitle: String {
+        switch self {
+        case .today: return "今日总 Token"
+        case .last3Days: return "近 3 天总 Token"
+        case .last7Days: return "近 7 天总 Token"
+        case .last30Days: return "近 30 天总 Token"
+        }
+    }
+    func windowCaption(todayDate: String) -> String {
+        switch self {
+        case .today: return "日期：\(todayDate)"
+        case .last3Days: return "窗口：近 3 个自然日"
+        case .last7Days: return "窗口：近 7 个自然日"
+        case .last30Days: return "窗口：近 30 个自然日"
+        }
+    }
+    var emptyMessage: String {
+        switch self {
+        case .today: return "今天还没有检测到 Antigravity 或 agy 调用记录。"
+        case .last3Days: return "近 3 天没有检测到 Antigravity 或 agy 调用记录。"
+        case .last7Days: return "近 7 天没有检测到 Antigravity 或 agy 调用记录。"
+        case .last30Days: return "近 30 天没有检测到 Antigravity 或 agy 调用记录。"
         }
     }
 }
@@ -18,9 +55,11 @@ struct UsageStatsView: View {
     @State private var selectedRange: UsageStatsRange = .today
 
     private var stats: AntigravityUsageStats? { model.usageStats }
+    private var selectedPeriod: AntigravityUsagePeriod? {
+        stats?.period(days: selectedRange.days)
+    }
     private var period: AntigravityUsagePeriod {
-        guard let stats else { return AntigravityUsagePeriod() }
-        return selectedRange == .today ? stats.today : stats.last7Days
+        selectedPeriod ?? AntigravityUsagePeriod()
     }
 
     var body: some View {
@@ -84,30 +123,31 @@ struct UsageStatsView: View {
     }
 
     private var summaryCards: some View {
-        HStack(spacing: 12) {
+        let ready = selectedPeriod != nil
+        return HStack(spacing: 12) {
             kpiCard(
-                title: selectedRange == .today ? "今日总 Token" : "近 7 天总 Token",
-                value: stats == nil ? "—" : AntigravityUsageFormat.tokens(period.totalTokens),
-                subtitle: stats == nil ? "等待扫描结果" : tokenBreakdownLine(period),
+                title: selectedRange.tokenCardTitle,
+                value: !ready ? "—" : AntigravityUsageFormat.tokens(period.totalTokens),
+                subtitle: !ready ? "等待扫描结果" : tokenBreakdownLine(period),
                 valueColor: .primary
             )
             kpiCard(
                 title: "折合官方 API 费用",
-                value: stats == nil ? "—" : period.costText,
+                value: !ready ? "—" : period.costText,
                 subtitle: costSubtitle,
-                valueColor: (period.totalTokens > 0 && period.estimatedCostUsd == nil) ? .orange : .primary
+                valueColor: (ready && period.totalTokens > 0 && period.estimatedCostUsd == nil) ? .orange : .primary
             )
             kpiCard(
                 title: "调用规模",
-                value: stats == nil ? "—" : "\(period.calls) 次",
-                subtitle: stats == nil ? "桌面版 + agy" : "\(period.models.count) 个模型 · 桌面 + agy",
+                value: !ready ? "—" : "\(period.calls) 次",
+                subtitle: !ready ? "桌面版 + agy" : "\(period.models.count) 个模型 · 桌面 + agy",
                 valueColor: .primary
             )
         }
     }
 
     private var costSubtitle: String {
-        guard stats != nil else { return "按官方 API 价格折算" }
+        guard selectedPeriod != nil else { return "按官方 API 价格折算" }
         if period.totalTokens > 0 && period.estimatedCostUsd == nil {
             return "所涉模型暂缺公开定价"
         }
@@ -151,7 +191,7 @@ struct UsageStatsView: View {
                     .foregroundStyle(stats?.pricingStale == true ? .orange : .secondary)
                 Spacer()
                 if let stats {
-                    Text(selectedRange == .today ? "日期：\(stats.todayDate)" : "窗口：近 7 个自然日")
+                    Text(selectedRange.windowCaption(todayDate: stats.todayDate))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -186,8 +226,10 @@ struct UsageStatsView: View {
             }
             if stats == nil {
                 emptyState(model.usageStatsBusy ? "正在统计本地调用记录，请稍候…" : "尚无用量缓存，点击右上角「立即刷新」开始扫描。")
+            } else if selectedPeriod == nil {
+                emptyState(model.usageStatsBusy ? "正在补全\(selectedRange.title)统计，请稍候…" : "当前缓存暂未包含\(selectedRange.title)数据，点击右上角「立即刷新」即可补全。")
             } else if period.models.isEmpty {
-                emptyState(selectedRange == .today ? "今天还没有检测到 Antigravity 或 agy 调用记录。" : "近 7 天没有检测到 Antigravity 或 agy 调用记录。")
+                emptyState(selectedRange.emptyMessage)
             } else {
                 let maxTokens = max(1, period.models.map(\.totalTokens).max() ?? 1)
                 List(period.models) { item in

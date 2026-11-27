@@ -333,57 +333,70 @@ test('pricing download sends zero personal headers and falls back cleanly on dow
   assert.ok(lookupModelPrice(fallback.models,'gemini-4-neon'),'retains cached pricing');
 });
 
-test('incremental DB scan leaves conversation DB bytes untouched, creates no wal/shm, and splits cross-day turns accurately',async t=>{
+test('incremental DB scan leaves conversation DB bytes untouched, creates no wal/shm, and splits 1/3/7/30-day windows accurately',async t=>{
   const {dataDir,desktopRoot,cliRoot}=makeTempWorkspace(t);
-  const today=new Date(2026,10,21,14,0,0).getTime();
-  const yesterday=new Date(2026,10,20,14,0,0).getTime();
-  const old10d=new Date(2026,10,10,14,0,0).getTime();
+  const today=new Date(2026,10,27,14,0,0).getTime();
+  const twoDaysAgo=new Date(2026,10,25,14,0,0).getTime();
+  const fiveDaysAgo=new Date(2026,10,22,14,0,0).getTime();
+  const fifteenDaysAgo=new Date(2026,10,12,14,0,0).getTime();
+  const fortyDaysAgo=new Date(2026,9,18,14,0,0).getTime();
 
   const idCross='00000000-0000-0000-0000-000000000010';
-  const idIdle='00000000-0000-0000-0000-000000000011';
-  const idOld='00000000-0000-0000-0000-000000000012';
+  const id5d='00000000-0000-0000-0000-000000000011';
+  const id15d='00000000-0000-0000-0000-000000000012';
+  const id40d='00000000-0000-0000-0000-000000000013';
 
   const dbCross=path.join(cliRoot,idCross+'.db');
-  const dbIdle=path.join(cliRoot,idIdle+'.db');
-  const dbOld=path.join(cliRoot,idOld+'.db');
+  const db5d=path.join(cliRoot,id5d+'.db');
+  const db15d=path.join(cliRoot,id15d+'.db');
+  const db40d=path.join(cliRoot,id40d+'.db');
 
   createConvDb(dbCross,[
     [0,makeGenBlob({stepIndices:[1],inputTokens:200000,outputTokens:10000,responseModel:'gemini-4-neon',modelDisplayName:'Gemini 4 Neon (High)'})],
     [1,makeGenBlob({stepIndices:[2],inputTokens:300000,outputTokens:20000,responseModel:'gemini-4-neon',modelDisplayName:'Gemini 4 Neon (High)'})]
-  ],[[1,yesterday],[2,today-30000]]);
+  ],[[1,twoDaysAgo],[2,today-30000]]);
   fs.utimesSync(dbCross,new Date(today-30000),new Date(today-30000));
 
-  createConvDb(dbIdle,[
+  createConvDb(db5d,[
     [0,makeGenBlob({stepIndices:[1],inputTokens:100000,outputTokens:5000,responseModel:'claude-opus-5-5-high',modelDisplayName:'Claude Opus 5.5 (High)'})]
-  ],[[1,yesterday]]);
-  fs.utimesSync(dbIdle,new Date(yesterday),new Date(yesterday));
+  ],[[1,fiveDaysAgo]]);
+  fs.utimesSync(db5d,new Date(fiveDaysAgo),new Date(fiveDaysAgo));
 
-  createConvDb(dbOld,[
+  createConvDb(db15d,[
+    [0,makeGenBlob({stepIndices:[1],inputTokens:400000,outputTokens:40000,responseModel:'gemini-4-neon',modelDisplayName:'Gemini 4 Neon (High)'})]
+  ],[[1,fifteenDaysAgo]]);
+  fs.utimesSync(db15d,new Date(fifteenDaysAgo),new Date(fifteenDaysAgo));
+
+  createConvDb(db40d,[
     [0,makeGenBlob({stepIndices:[1],inputTokens:999999,outputTokens:99999,responseModel:'gemini-4-neon',modelDisplayName:'Gemini 4 Neon (High)'})]
-  ],[[1,old10d]]);
-  fs.utimesSync(dbOld,new Date(old10d),new Date(old10d));
+  ],[[1,fortyDaysAgo]]);
+  fs.utimesSync(db40d,new Date(fortyDaysAgo),new Date(fortyDaysAgo));
 
   const sha=file=>createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-  const hashesBefore={cross:sha(dbCross),idle:sha(dbIdle),old:sha(dbOld)};
+  const hashesBefore={cross:sha(dbCross),d5:sha(db5d),d15:sha(db15d),d40:sha(db40d)};
 
   const res=await scanAntigravityUsage({
     dataDir,desktopRoot,cliRoot,now:today,force:true,
     listTrajectories:null,rpc:null,fetchImpl:mockFetch(SAMPLE_PRICING)
   });
 
-  // Old 10-day DB was never opened; only the 2 recent DBs were opened.
-  assert.equal(res.summary.scan.dbFilesOpened,2);
+  // 40-day-old DB was never opened; only the 3 DBs within 30 days were opened.
+  assert.equal(res.summary.scan.dbFilesOpened,3);
   assert.equal(res.summary.scan.dbFilesSkipped,1);
 
-  // Today includes ONLY turn 1 of idCross (320,000), NOT yesterday's turns.
+  // Today: turn 1 of idCross = 320,000
   assert.equal(res.summary.today.totalTokens,320000);
-  // Last 7 days includes turn 0 + turn 1 of idCross + idIdle = 210k + 320k + 105k = 635,000 (excludes 10-day-old DB).
+  // Last 3 days: turn 0 (day -2: 210k) + turn 1 (today: 320k) = 530,000
+  assert.equal(res.summary.last3Days.totalTokens,530000);
+  // Last 7 days: 530k + id5d (105k) = 635,000
   assert.equal(res.summary.last7Days.totalTokens,635000);
   assert.equal(res.summary.last7Days.models.length,2);
+  // Last 30 days: 635k + id15d (440k) = 1,075,000 (excludes 40-day-old DB)
+  assert.equal(res.summary.last30Days.totalTokens,1075000);
 
   // Zero writes to conversation DBs and zero -wal/-shm sidecars created!
-  assert.deepEqual({cross:sha(dbCross),idle:sha(dbIdle),old:sha(dbOld)},hashesBefore);
-  for(const db of [dbCross,dbIdle,dbOld]){
+  assert.deepEqual({cross:sha(dbCross),d5:sha(db5d),d15:sha(db15d),d40:sha(db40d)},hashesBefore);
+  for(const db of [dbCross,db5d,db15d,db40d]){
     assert.equal(fs.existsSync(db+'-wal'),false);
     assert.equal(fs.existsSync(db+'-shm'),false);
   }
@@ -391,15 +404,52 @@ test('incremental DB scan leaves conversation DB bytes untouched, creates no wal
   // Subsequent force scan with no changes opens 0 DBs and does NOT rewrite cache file.
   const cacheFile=path.join(dataDir,USAGE_CACHE_FILENAME);
   const statsFile=path.join(dataDir,USAGE_STATS_FILENAME);
-  assert.ok(fs.statSync(statsFile).size<4096,'summary file stays a few KB');
+  assert.ok(fs.statSync(statsFile).size<8192,'summary file stays a few KB');
   const cacheBefore=fs.readFileSync(cacheFile);
   const res2=await scanAntigravityUsage({
     dataDir,desktopRoot,cliRoot,now:today+1000,force:true,
     listTrajectories:null,rpc:null,fetchImpl:mockFetch(SAMPLE_PRICING)
   });
   assert.equal(res2.summary.scan.dbFilesOpened,0);
-  assert.equal(res2.summary.scan.dbFilesSkipped,3);
+  assert.equal(res2.summary.scan.dbFilesSkipped,4);
   assert.deepEqual(fs.readFileSync(cacheFile),cacheBefore);
+});
+
+test('upgrading from v1 7-day cache automatically backfills 3-day and 30-day history even within 1h',async t=>{
+  const {dataDir,desktopRoot,cliRoot}=makeTempWorkspace(t);
+  const today=new Date(2026,10,27,14,0,0).getTime();
+  const fifteenDaysAgo=new Date(2026,10,12,14,0,0).getTime();
+  const id='00000000-0000-0000-0000-000000000020';
+  const dbPath=path.join(cliRoot,id+'.db');
+  createConvDb(dbPath,[
+    [0,makeGenBlob({stepIndices:[1],inputTokens:250000,outputTokens:10000,responseModel:'gemini-4-neon',modelDisplayName:'Gemini 4 Neon (High)'})],
+    [1,makeGenBlob({stepIndices:[2],inputTokens:100000,outputTokens:5000,responseModel:'gemini-4-neon',modelDisplayName:'Gemini 4 Neon (High)'})]
+  ],[[1,fifteenDaysAgo],[2,today-10000]]);
+  fs.utimesSync(dbPath,new Date(today-10000),new Date(today-10000));
+  const st=fs.statSync(dbPath);
+  const fp=`${Math.trunc(st.mtimeMs)}:${st.size}:0:0`;
+
+  // Simulate an existing v1 (7-day) cache that had pruned day -15 and omitted last3Days/last30Days.
+  fs.writeFileSync(path.join(dataDir,USAGE_STATS_FILENAME),JSON.stringify({
+    version:1,updatedAt:today-60000,todayDate:'2026-11-27',disclaimer:'test',
+    today:{totalTokens:105000,inputTokens:100000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:5000,responseOutputTokens:5000,thinkingOutputTokens:0,calls:1,estimatedCostUsd:0.375,hasUnknownPrice:false,topModels:[],models:[]},
+    last7Days:{totalTokens:105000,inputTokens:100000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:5000,responseOutputTokens:5000,thinkingOutputTokens:0,calls:1,estimatedCostUsd:0.375,hasUnknownPrice:false,topModels:[],models:[]}
+  }));
+  fs.writeFileSync(path.join(dataDir,USAGE_CACHE_FILENAME),JSON.stringify({
+    version:1,labels:{'gemini-4-neon':'Gemini 4 Neon'},
+    conversations:{[id]:{s:'c',lm:st.mtimeMs,sc:0,fp,sz:st.size,n:2,d:{'2026-11-27':{'gemini-4-neon':[100000,0,0,5000,5000,0,0,0,0,0,1]}}}}
+  }));
+
+  // Even with force=false within 1h, upgrade triggers a one-time backfill scan and recovers day -15!
+  const upgraded=await scanAntigravityUsage({
+    dataDir,desktopRoot,cliRoot,now:today,force:false,
+    listTrajectories:null,rpc:null,fetchImpl:mockFetch(SAMPLE_PRICING)
+  });
+  assert.equal(upgraded.scanned,true);
+  assert.equal(upgraded.summary.today.totalTokens,105000);
+  assert.equal(upgraded.summary.last3Days.totalTokens,105000);
+  assert.equal(upgraded.summary.last7Days.totalTokens,105000);
+  assert.equal(upgraded.summary.last30Days.totalTokens,365000);
 });
 
 test('tiered >200k pricing and canonical model normalization work cleanly',()=>{
@@ -434,10 +484,12 @@ test('gui-worker refreshUsage triggers immediate usage scan while quota refresh 
   const nowDate=new Date();
   const todayDate=`${nowDate.getFullYear()}-${String(nowDate.getMonth()+1).padStart(2,'0')}-${String(nowDate.getDate()).padStart(2,'0')}`;
   const cachedSummary={
-    version:1,updatedAt:nowDate.getTime(),todayDate,
+    version:2,updatedAt:nowDate.getTime(),todayDate,
     disclaimer:'test',pricingUpdatedAt:Date.now(),pricingSource:'litellm',pricingStale:false,
     today:{totalTokens:1234,inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:234,responseOutputTokens:234,thinkingOutputTokens:0,calls:1,estimatedCostUsd:0.01,hasUnknownPrice:false,topModels:[],models:[]},
-    last7Days:{totalTokens:1234,inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:234,responseOutputTokens:234,thinkingOutputTokens:0,calls:1,estimatedCostUsd:0.01,hasUnknownPrice:false,topModels:[],models:[]}
+    last3Days:{totalTokens:1234,inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:234,responseOutputTokens:234,thinkingOutputTokens:0,calls:1,estimatedCostUsd:0.01,hasUnknownPrice:false,topModels:[],models:[]},
+    last7Days:{totalTokens:1234,inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:234,responseOutputTokens:234,thinkingOutputTokens:0,calls:1,estimatedCostUsd:0.01,hasUnknownPrice:false,topModels:[],models:[]},
+    last30Days:{totalTokens:1234,inputTokens:1000,cacheReadTokens:0,cacheWriteTokens:0,outputTokens:234,responseOutputTokens:234,thinkingOutputTokens:0,calls:1,estimatedCostUsd:0.01,hasUnknownPrice:false,topModels:[],models:[]}
   };
   fs.writeFileSync(path.join(dataDir,USAGE_STATS_FILENAME),JSON.stringify(cachedSummary));
   // Replace gemini-usage.mjs & gemini-usage-stats.mjs with isolated mocks.
